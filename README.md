@@ -39,13 +39,13 @@ python editor.py
 
 4. **Explore in Browser**:
 Once the server is running, open your web browser and navigate to the address provided in your terminal (usually `http://127.0.0.1:5000`).
-
+![image](https://raw.githubusercontent.com/freeze-man-1/CrossHermitYBCEditor/refs/heads/main/Screenshots/Screenshot%202026-07-08%20061115.png)
 ## Technical Overview
 
 * **`editor.py`**: The Flask backend handles parsing the proprietary `.ybc` binary format into JSON for the frontend, and recompiling JSON back into `.ybc` binary files.
 * **`opcode_schema.js`**: Defines the authoritative schema for the game's Virtual Machine (VM), including opcodes, parameter mapping, character lists, and slot definitions.
 * **`index.html`**: The frontend GUI built with PIXI.js, providing the visual layout, timeline navigation, and property inspection.
-
+![image](https://raw.githubusercontent.com/freeze-man-1/CrossHermitYBCEditor/refs/heads/main/Screenshots/Screenshot%202026-07-08%20061737.png)
 ---
 
 *Note: This tool is intended for development and modding purposes related to "Cross Hermit: Welcome to the Farthest".*
