@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Visual Novel YBC Editor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script src="opcode_schema.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { display: flex; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1e1e1e; color: #d4d4d4; margin: 0; height: 100vh; overflow: hidden; }
+
+        /* === THREE-PANEL GODOT LAYOUT === */
+        .panel-left { width: 320px; display: flex; flex-direction: column; border-right: 2px solid #333; background: #252526; }
+        .panel-center { flex: 1; display: flex; flex-direction: column; min-width: 400px; overflow: hidden; }
+        .panel-right { width: 360px; display: flex; flex-direction: column; border-left: 2px solid #333; background: #252526; overflow-y: auto; }
+
+        /* Left panel: Scene Tree */
+        .tree-header { padding: 8px 12px; background: #1b1b1b; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        .tree-header h3 { margin: 0; font-size: 12px; color: #d7ba7d; text-transform: uppercase; letter-spacing: 0.5px; }
+        .tree-filter { flex: 1; background: #3c3c3c; border: 1px solid #555; color: #d4d4d4; padding: 4px 8px; border-radius: 3px; font-size: 11px; }
+        .tree-filter:focus { outline: 1px solid #007acc; border-color: #007acc; }
+        .tree-container { flex: 1; overflow-y: auto; position: relative; }
+        .tree-viewport { position: relative; }
+        .tree-node { height: 28px; display: flex; align-items: center; padding: 0 8px; cursor: pointer; border-left: 3px solid transparent; font-size: 11px; position: absolute; width: 100%; left: 0; }
+        .tree-node:hover { background: #2a2d2e; }
+        .tree-node.active { background: #094771; border-left-color: #d7ba7d; }
+        .tree-node.jump-target { border-left-color: #c586c0; }
+        .tree-node .tn-idx { width: 32px; color: #6a6a6a; font-family: monospace; font-size: 10px; flex-shrink: 0; }
+        .tree-node .tn-icon { width: 16px; text-align: center; font-size: 10px; margin-right: 4px; flex-shrink: 0; }
+        .tree-node .tn-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .tree-node .tn-badge { font-size: 9px; padding: 1px 4px; border-radius: 6px; color: #fff; margin-left: 4px; flex-shrink: 0; }
+        .tree-node .tn-arrow { font-size: 9px; color: #c586c0; margin-left: 4px; flex-shrink: 0; }
+
+        /* Center panel */
+        .viewport-wrap { display: flex; flex-direction: column; align-items: center; padding: 8px; flex: 1; overflow: hidden; }
+        #gameCanvasContainer { box-shadow: 0 4px 15px rgba(0,0,0,0.8); border-radius: 4px; overflow: hidden; width: 100%; max-width: 800px; aspect-ratio: 4/3; background: #000; }
+        #gameCanvasContainer canvas { width: 100% !important; height: 100% !important; }
+        .toolbar { display: flex; gap: 6px; padding: 8px 12px; background: #1b1b1b; border-bottom: 1px solid #333; align-items: center; flex-wrap: wrap; flex-shrink: 0; }
+        .toolbar select, .toolbar button { font-size: 12px; }
+        .toolbar select { background: #3c3c3c; border: 1px solid #555; color: #d4d4d4; padding: 4px 8px; border-radius: 3px; }
+        .toolbar button { padding: 5px 12px; cursor: pointer; background: #0e639c; color: white; border: 1px solid #1177bb; border-radius: 3px; font-weight: 600; }
+        .toolbar button:hover { background: #1177bb; }
+        .timeline { display: flex; gap: 6px; padding: 6px 12px; background: #1b1b1b; border-top: 1px solid #333; align-items: center; flex-shrink: 0; }
+        .timeline button { padding: 4px 8px; font-size: 11px; cursor: pointer; background: #333; color: #d4d4d4; border: 1px solid #444; border-radius: 3px; }
+        .timeline button:hover { background: #0e639c; color: #fff; }
+        .timeline #tlSlider { flex: 1; accent-color: #4fc1ff; cursor: pointer; }
+        .timeline #tlLabel { font-size: 11px; color: #9cdcfe; min-width: 60px; text-align: right; font-family: monospace; }
+        #playBtn { background: #2e7d32; border-color: #3a9e3e; color: #fff; min-width: 70px; }
+
+        /* Right panel: Inspector */
+        .inspector-header { padding: 10px 14px; background: #1b1b1b; border-bottom: 1px solid #333; flex-shrink: 0; }
+        .inspector-header h3 { margin: 0; font-size: 12px; color: #4fc1ff; text-transform: uppercase; letter-spacing: 0.5px; }
+        .inspector-body { flex: 1; overflow-y: auto; padding: 10px; }
+        .insp-section { margin-bottom: 14px; background: #1e1e1e; border-radius: 4px; border: 1px solid #333; overflow: hidden; }
+        .insp-section-head { padding: 6px 10px; background: #2d2d30; font-size: 11px; font-weight: 600; color: #d7ba7d; cursor: pointer; display: flex; justify-content: space-between; }
+        .insp-section-body { padding: 8px 10px; display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; align-items: center; }
+        .insp-section-body label { font-size: 11px; color: #9cdcfe; }
+        .insp-section-body input, .insp-section-body select { background: #3c3c3c; border: 1px solid #555; color: #d4d4d4; padding: 4px 6px; border-radius: 3px; font-size: 11px; width: 100%; }
+        .insp-section-body input:focus, .insp-section-body select:focus { outline: 1px solid #007acc; border-color: #007acc; }
+        .insp-desc { font-size: 10px; color: #808080; font-style: italic; padding: 4px 10px 8px; grid-column: 1 / -1; }
+        .insp-empty { padding: 40px 20px; text-align: center; color: #6a6a6a; font-size: 12px; }
+        .op-ref { display: flex; gap: 4px; } .op-ref select { width: 70px; flex-shrink: 0; } .op-ref input { flex: 1; }
+
+        /* Palette (add node) in left panel */
+        .palette-bar { padding: 6px 8px; background: #1b1b1b; border-top: 1px solid #333; display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+        .palette-bar select { flex: 1; background: #3c3c3c; border: 1px solid #555; color: #d4d4d4; padding: 4px; border-radius: 3px; font-size: 11px; }
+        .palette-bar button { padding: 4px 8px; font-size: 11px; background: #0e639c; color: #fff; border: 1px solid #1177bb; border-radius: 3px; cursor: pointer; }
+
+        /* Audio controls */
+        .audio-bar { display: flex; gap: 12px; padding: 6px 12px; background: #1b1b1b; border-top: 1px solid #333; align-items: center; flex-shrink: 0; font-size: 11px; }
+        .audio-bar label { display: flex; align-items: center; gap: 4px; color: #9cdcfe; }
+        .audio-bar input[type="range"] { width: 60px; cursor: pointer; }
+
+        /* Bulk text editor modal */
+        .bulk-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 9999; display: flex; align-items: center; justify-content: center; }
+        .bulk-modal { background: #1e1e1e; border: 1px solid #555; border-radius: 6px; width: 80vw; max-width: 900px; height: 80vh; display: flex; flex-direction: column; }
+        .bulk-modal-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #333; }
+        .bulk-modal-header h3 { margin: 0; color: #d7ba7d; font-size: 14px; }
+        .bulk-modal-header .bulk-btns { display: flex; gap: 6px; }
+        .bulk-modal-header button { padding: 5px 14px; font-size: 12px; border-radius: 3px; cursor: pointer; border: 1px solid #555; }
+        .bulk-modal textarea { flex: 1; background: #252526; color: #d4d4d4; border: none; padding: 12px 16px; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; line-height: 1.6; resize: none; outline: none; }
+        .bulk-modal .bulk-hint { padding: 6px 16px; font-size: 11px; color: #888; border-top: 1px solid #333; }
+    </style>
+</head>
+<body>
+
+    <!-- LEFT PANEL: Scene Tree -->
+    <div class="panel-left">
+        <div class="tree-header">
+            <h3>Scene Tree</h3>
+            <input class="tree-filter" id="treeFilter" placeholder="Filter nodes..." oninput="filterTree(this.value)">
+        </div>
+        <div class="tree-container" id="treeContainer">
+            <div class="tree-viewport" id="treeViewport"></div>
+        </div>
+        <div class="palette-bar" id="paletteBar"></div>
+    </div>
+
+    <!-- CENTER PANEL: Viewport -->
+    <div class="panel-center">
+        <div class="toolbar">
+            <select id="scriptPicker" title="Choose a .ybc script"></select>
+            <button onclick="openScript()">Open</button>
+            <button onclick="toggleLanguage()">JP/EN</button>
+            <button style="background:#228b22;border-color:#2e9e2e;" onclick="saveScript()">Save JSON</button>
+            <button style="background:#8a5a00;border-color:#a06a00;" onclick="saveYbc()">Compile .ybc</button>
+            <button style="background:#6a1b9a;border-color:#8e24aa;" onclick="openBulkTextEditor()">Bulk Text</button>
+        </div>
+        <div class="viewport-wrap">
+            <div id="gameCanvasContainer"></div>
+        </div>
+        <div class="timeline">
+            <button onclick="tlFirst()">⏮</button>
+            <button onclick="tlPrev()">◀</button>
+            <button id="playBtn" onclick="playPause()">▶ Play</button>
+            <button onclick="stepNode()">▶❘</button>
+            <input type="range" id="tlSlider" min="0" max="0" value="0" oninput="onScrub(this.value)">
+            <span id="tlLabel">0 / 0</span>
+        </div>
+        <div class="audio-bar">
+            <label>BGM <input type="range" id="vol-bgm" min="0" max="1" step="0.05" value="0.3" oninput="updateVolume('bgm', this.value)"></label>
+            <label>Voice <input type="range" id="vol-voice" min="0" max="1" step="0.05" value="0.8" oninput="updateVolume('voice', this.value)"></label>
+            <label>SE <input type="range" id="vol-se" min="0" max="1" step="0.05" value="0.8" oninput="updateVolume('se', this.value)"></label>
+        </div>
+    </div>
+
+    <!-- RIGHT PANEL: Inspector -->
+    <div class="panel-right">
+        <div class="inspector-header">
+            <h3>Inspector</h3>
+        </div>
+        <div class="inspector-body" id="inspectorBody">
+            <div class="insp-empty">Select a node to inspect its properties.</div>
+        </div>
+    </div>
+
+    <script>
+        const app = new PIXI.Application({ width: 1024, height: 768, backgroundColor: 0x000000 });
+        document.getElementById('gameCanvasContainer').appendChild(app.view);
+
+        const layerBG = new PIXI.Container();
+        const layerCG = new PIXI.Container();
+        const layerChars = new PIXI.Container();
+        const layerUI = new PIXI.Container();
+        const layerHotspots = new PIXI.Container();
+        app.stage.addChild(layerBG, layerCG, layerChars, layerUI, layerHotspots);
+        app.stage.eventMode = 'static';
+
+        let uiBaseTexture = null;
+        let voiceMap = null;
+        let currentAudio = null;
+        let currentBGM = null;
+        let currentSE = null;
+        let volState = { bgm: 0.3, voice: 0.8, se: 0.8 };
+
+        const SLOT_LAYOUTS = {
+            "0":  { charX: 0, charY: 0, boxX: 280, boxY: 300, hasName: false },
+            "1":  { charX: 256, charY: 0, boxX: 280, boxY: 300, hasName: false },
+            "2":  { charX: 0, charY: 0, boxX: 30, boxY: 550, hasName: false },
+            "3":  { charX: 480, charY: 0, boxX: 530, boxY: 550, hasName: false },
+            "4":  { charX: 480, charY: 0, boxX: 530, boxY: 550, hasName: false },
+            "5":  { charX: 0, charY: 0, boxX: 30, boxY: 550, hasName: true },
+            "6":  { charX: 480, charY: 0, boxX: 530, boxY: 550, hasName: true },
+            "7":  { charX: 10, charY: 20, boxX: 300, boxY: 40, hasName: false },
+            "8":  { charX: 720, charY: 250, boxX: 230, boxY: 250, hasName: false },
+            "9":  { charX: 80, charY: 380, boxX: 360, boxY: 420, hasName: false },
+            "10": { charX: 150, charY: 250, boxX: 420, boxY: 280, hasName: false },
+            "11": { charX: 600, charY: 250, boxX: 120, boxY: 280, hasName: false }
+        };
+
+        const CHAR_ALIAS = { 101: 0, 130: 2 };
+        const SPRITE_ATLAS = {
+            "DEFAULT": { base: { x: 0, y: 0, w: 512, h: 768 }, faces: { startX: 0, startY: 768, w: 128, h: 128 }, faceOffset: { x: 196, y: 155 } }
+        };
+        const FACE_OFFSETS = {
+            0:{x:234,y:175}, 1:{x:188,y:178}, 2:{x:167,y:179}, 3:{x:192,y:126},
+            4:{x:196,y:155}, 5:{x:197,y:156}, 6:{x:240,y:134}, 7:{x:299,y:143},
+            8:{x:202,y:223}, 9:{x:166,y:198}, 10:{x:209,y:79}, 11:{x:189,y:203}, 12:{x:196,y:123},
+            101:{x:232,y:172}, 130:{x:167,y:179}
+        };
+
+        const activeTextBoxes = {};
+        let slotCharacterRegistry = {};
+        let currentActiveSpeakerId = null;
+        let currentActiveSlotId = "0";
+
+        let scriptNodes = [];
+        let currentNodeIndex = 0;
+        let showEnglish = false;
+        let textLineIndex = 0;
+        let scrubbing = false;
+        let playing = false;
+        let currentBGMTrack = null;
+        let loadedBgTextures = [];
+        let partTextures = {};
+
+        const PART_FILES = {
+            'BATTLE': ['B-PART001.BIN'],
+            'KOJIN':  ['K-PART001.BIN','K-PART002.BIN','K-PART003.BIN','K-PART004.BIN','K-PART005.BIN'],
+            'HAN':    ['H-PART001.BIN','H-PART002.BIN','H-PART003.BIN'],
+            'MENU':   ['MMP001.BIN','MMP002.BIN','MMP003.BIN'],
+            'MM':     ['MMP001.BIN','MMP002.BIN','MMP003.BIN'],
+        };
+
+        async function loadPartTextures(scriptName) {
+            partTextures = {};
+            const upper = scriptName.toUpperCase();
+            let prefix = null;
+            for (const key of Object.keys(PART_FILES)) {
+                if (upper.startsWith(key)) { prefix = key; break; }
+            }
+            if (!prefix) return;
+            const files = PART_FILES[prefix];
+            for (let i = 0; i < files.length; i++) {
+                try { partTextures[i] = await PIXI.Assets.load(`/api/image/${files[i]}.png`); } catch(e) {}
+            }
+        }
+
+        // --- Schema ---
+        const SCH = (typeof OPCODE_SCHEMA !== "undefined") ? OPCODE_SCHEMA : { OPCODES:{}, SLOTS:{}, CHARACTERS:{}, EXPRESSIONS:{}, CATEGORY_COLOR:{}, CONF_BADGE:{} };
+        const esc = s => String(s == null ? "" : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+        function resolveBgFilename(id) {
+            const p = (n,w=3) => String(n).padStart(w,'0');
+            if (id <= 116) return `BG${p(Math.floor((id-1)/4)+1)}_${'ABCD'[(id-1)%4]}.BIN`;
+            if (id <= 122) return `BG${p(id-117+30)}_X.BIN`;
+            if (id >= 140 && id <= 147) return `M${p(id-139)}.BIN`;
+            if (id >= 150 && id <= 153) return `MM${p(id-149)}.BIN`;
+            if (id >= 154 && id <= 166) return `HAN${p(id-153)}.BIN`;
+            if (id >= 166 && id <= 198) return `KOJIN${p(id-165)}.BIN`;
+            if (id >= 200 && id <= 211) return `BATTLE${p(id-199)}.BIN`;
+            return `BG${p(id)}_X.BIN`;
+        }
+
+        // --- CATEGORY ICONS ---
+        const CAT_ICON = { Flow:"⤵", Timing:"⏱", Dialogue:"💬", Portrait:"🎭", MsgBox:"📦", Display:"🖼", Effect:"✨", Audio:"🔊", System:"⚙", Sprite:"🎞", Unknown:"❓" };
+
+        // ==================== VIRTUAL-SCROLLED SCENE TREE ====================
+        const TREE_NODE_H = 28;
+        let treeFilterStr = "";
+        let filteredIndices = null;
+
+        function filterTree(val) {
+            treeFilterStr = val.trim().toLowerCase();
+            if (!treeFilterStr) { filteredIndices = null; }
+            else {
+                filteredIndices = [];
+                for (let i = 0; i < scriptNodes.length; i++) {
+                    const n = scriptNodes[i];
+                    const d = SCH.OPCODES[n.opcode];
+                    const name = d ? d.name : (n.name || "Unknown");
+                    const text = `${i} ${n.opcode} ${name} ${n.jp_text||''} ${n.en_text||''}`.toLowerCase();
+                    if (text.includes(treeFilterStr)) filteredIndices.push(i);
+                }
+            }
+            renderTree();
+        }
+
+        function getVisibleIndices() {
+            return filteredIndices || Array.from({length: scriptNodes.length}, (_,i) => i);
+        }
+
+        function renderTree() {
+            const container = document.getElementById('treeContainer');
+            const viewport = document.getElementById('treeViewport');
+            const indices = getVisibleIndices();
+            const totalH = indices.length * TREE_NODE_H;
+            viewport.style.height = totalH + 'px';
+
+            const scrollTop = container.scrollTop;
+            const viewH = container.clientHeight;
+            const startIdx = Math.floor(scrollTop / TREE_NODE_H);
+            const endIdx = Math.min(indices.length, Math.ceil((scrollTop + viewH) / TREE_NODE_H) + 1);
+
+            let html = '';
+            for (let vi = startIdx; vi < endIdx; vi++) {
+                const i = indices[vi];
+                const n = scriptNodes[i];
+                const d = SCH.OPCODES[n.opcode];
+                const cat = d ? d.cat : 'Unknown';
+                const color = SCH.CATEGORY_COLOR[cat] || '#007acc';
+                const name = d ? d.name : (n.name || 'Unknown');
+                const icon = CAT_ICON[cat] || '❓';
+                const isActive = i === (currentNodeIndex - 1);
+                const hasJump = n._target !== undefined;
+                const top = vi * TREE_NODE_H;
+
+                let preview = '';
+                if (n.opcode === '0011' || n.opcode === '000F') preview = ` — ${esc((showEnglish ? n.en_text : n.jp_text) || '').substring(0, 30)}`;
+                else if (n.opcode === '001E' || n.opcode === '0021') preview = ` — ${esc(n.meta?.char_name_en || '')}`;
+                else if (n.opcode === '0034') preview = ` — ${n.meta?.count || '?'} hotspots`;
+
+                html += `<div class="tree-node${isActive?' active':''}${hasJump?' jump-target':''}" style="top:${top}px;border-left-color:${isActive?'#d7ba7d':color}" onclick="jumpToNode(${i})" ondblclick="jumpToNode(${i})">
+                    <span class="tn-idx">${i}</span>
+                    <span class="tn-icon">${icon}</span>
+                    <span class="tn-name" style="color:${color}">${esc(name)}${preview}</span>
+                    ${hasJump?'<span class="tn-arrow">→'+n._target+'</span>':''}
+                </div>`;
+            }
+            viewport.innerHTML = html;
+
+            const sl = document.getElementById('tlSlider');
+            if (sl) sl.max = Math.max(0, scriptNodes.length - 1);
+            const lb = document.getElementById('tlLabel');
+            if (lb) lb.textContent = (scriptNodes.length ? Math.min(currentNodeIndex, scriptNodes.length) : 0) + ' / ' + scriptNodes.length;
+        }
+
+        document.getElementById('treeContainer').addEventListener('scroll', renderTree);
+
+        function scrollTreeToActive() {
+            const indices = getVisibleIndices();
+            const vi = indices.indexOf(currentNodeIndex - 1);
+            if (vi < 0) return;
+            const container = document.getElementById('treeContainer');
+            const targetTop = vi * TREE_NODE_H;
+            const viewH = container.clientHeight;
+            if (targetTop < container.scrollTop || targetTop > container.scrollTop + viewH - TREE_NODE_H) {
+                container.scrollTop = targetTop - viewH / 2;
+            }
+        }
+
+        // ==================== INSPECTOR PANEL ====================
+        function renderInspector(index) {
+            const body = document.getElementById('inspectorBody');
+            if (index < 0 || index >= scriptNodes.length) {
+                body.innerHTML = '<div class="insp-empty">Select a node to inspect its properties.</div>';
+                return;
+            }
+            const node = scriptNodes[index];
+            const d = SCH.OPCODES[node.opcode];
+            const cat = d ? d.cat : 'Unknown';
+            const name = d ? d.name : (node.name || 'Unknown');
+            const color = SCH.CATEGORY_COLOR[cat] || '#007acc';
+
+            let html = '';
+
+            html += `<div class="insp-section">
+                <div class="insp-section-head"><span style="color:${color}">${esc(name)}</span><span style="color:#808080">0x${node.opcode} #${index}</span></div>
+                ${d && d.desc ? `<div class="insp-desc">${esc(d.desc)}</div>` : ''}
+            </div>`;
+
+            if (d && d.text) {
+                html += `<div class="insp-section">
+                    <div class="insp-section-head">Dialogue Text</div>
+                    <div class="insp-section-body">
+                        <label>Japanese</label><input type="text" value="${esc(node.jp_text)}" onchange="scriptNodes[${index}].jp_text=this.value; reExecIfActive(${index}); renderTree();">
+                        <label>English</label><input type="text" value="${esc(node.en_text)}" onchange="scriptNodes[${index}].en_text=this.value; reExecIfActive(${index}); renderTree();">
+                    </div>
+                </div>`;
+            }
+
+            if (d && d.layout && node.meta && node.meta.hotspots) {
+                html += `<div class="insp-section">
+                    <div class="insp-section-head">Layout Settings</div>
+                    <div class="insp-section-body">
+                        <label>Count</label><input type="number" value="${node.meta.count||0}" disabled>
+                        <label>Param</label><input type="number" value="${node.meta.layout_param||0}" onchange="editHotspotMeta(${index},'layout_param',this.value)">
+                        <label>Default goto</label><input type="number" value="${node.meta.default_goto||0}" onchange="editHotspotMeta(${index},'default_goto',this.value)">
+                        <label>Fallback goto</label><input type="number" value="${node.meta.fallback_goto||0}" onchange="editHotspotMeta(${index},'fallback_goto',this.value)">
+                    </div>
+                </div>`;
+                node.meta.hotspots.forEach((hs, hi) => {
+                    const hc = HOTSPOT_COLORS[hi % HOTSPOT_COLORS.length];
+                    const hexC = '#' + hc.toString(16).padStart(6, '0');
+                    html += `<div class="insp-section">
+                        <div class="insp-section-head"><span style="color:${hexC}">Hotspot ${hi}</span><span style="color:#808080">goto → ${hs.goto}</span></div>
+                        <div class="insp-section-body">
+                            <label>Goto</label><input type="number" value="${hs.goto}" onchange="editHotspot(${index},${hi},'goto',this.value)">
+                            <label>X</label><input type="number" value="${hs.x}" onchange="editHotspot(${index},${hi},'x',this.value)">
+                            <label>Y</label><input type="number" value="${hs.y}" onchange="editHotspot(${index},${hi},'y',this.value)">
+                            <label>W</label><input type="number" value="${hs.w}" onchange="editHotspot(${index},${hi},'w',this.value)">
+                            <label>H</label><input type="number" value="${hs.h}" onchange="editHotspot(${index},${hi},'h',this.value)">
+                        </div>
+                    </div>`;
+                });
+            }
+
+            if (d && d.params && d.params.length) {
+                html += `<div class="insp-section">
+                    <div class="insp-section-head">Parameters</div>
+                    <div class="insp-section-body">`;
+                d.params.forEach(param => {
+                    html += `<label title="${esc(param.key)}">${esc(param.label)}</label>${paramWidget(node, index, param)}`;
+                    if (param.hint) html += `<div class="insp-desc">${esc(param.hint)}</div>`;
+                });
+                html += `</div></div>`;
+            }
+
+            if (node.args && node.args.length) {
+                html += `<div class="insp-section">
+                    <div class="insp-section-head">Raw Arguments (${node.args.length})</div>
+                    <div class="insp-section-body">`;
+                node.args.forEach((a, ai) => {
+                    html += `<label>[${ai}]</label><input type="number" value="${a}" onchange="updateArg(${index},${ai},this.value)">`;
+                });
+                html += `</div></div>`;
+            }
+
+            html += `<div class="insp-section">
+                <div class="insp-section-head">Actions</div>
+                <div style="padding:8px 10px;display:flex;gap:6px;flex-wrap:wrap;">
+                    <button onclick="moveNode(${index},-1)" style="padding:4px 10px;font-size:11px;background:#333;border:1px solid #444;color:#d4d4d4;border-radius:3px;cursor:pointer;">▲ Up</button>
+                    <button onclick="moveNode(${index},1)" style="padding:4px 10px;font-size:11px;background:#333;border:1px solid #444;color:#d4d4d4;border-radius:3px;cursor:pointer;">▼ Down</button>
+                    <button onclick="deleteNode(${index})" style="padding:4px 10px;font-size:11px;background:#5a1d1d;border:1px solid #803d3d;color:#d4d4d4;border-radius:3px;cursor:pointer;">✕ Delete</button>
+                </div>
+            </div>`;
+
+            body.innerHTML = html;
+            renderHotspots(index);
+        }
+
+        function schemaFor(node) { return SCH.OPCODES[node.opcode] || null; }
+
+        function getVal(node, param) {
+            if (param.meta && node.meta && node.meta[param.meta] !== undefined) return node.meta[param.meta];
+            if (param.ai >= 0 && node.args && node.args[param.ai] !== undefined) return node.args[param.ai];
+            return 0;
+        }
+        function setVal(node, param, val) {
+            val = parseInt(val, 10); if (isNaN(val)) val = 0;
+            if (param.ai >= 0) {
+                if (!node.args) node.args = [];
+                while (node.args.length <= param.ai) node.args.push(0);
+                node.args[param.ai] = val;
+            }
+            if (param.meta) { node.meta = node.meta || {}; node.meta[param.meta] = val; }
+            recomputeDerived(node);
+        }
+        function recomputeDerived(node) {
+            const m = node.meta = node.meta || {};
+            if (node.opcode === "0028" && m.char_id !== undefined) {
+                const c = SCH.CHARACTERS[m.char_id];
+                m.char_name_jp = m.char_name_jp || c || ("Char " + m.char_id);
+                m.char_name_en = c || ("Char " + m.char_id);
+            }
+            if (node.opcode === "001E" || node.opcode === "0021") {
+                const c = SCH.CHARACTERS[m.char_id];
+                m.char_name_en = c || ("Character " + m.char_id);
+                if (!m.char_name_jp) m.char_name_jp = c || ("Character " + m.char_id);
+                const sb = m.speech_box;
+                const fileCharId = CHAR_ALIAS[m.char_id] !== undefined ? CHAR_ALIAS[m.char_id] : (m.char_id || 0);
+                m.file = `${[7,8,9,10,11].includes(sb) ? 'sc' : 'mc'}${String(fileCharId).padStart(3, '0')}.BIN`.toUpperCase();
+            }
+            if (node.opcode === "003B" && m.bg_id !== undefined) {
+                m.file = resolveBgFilename(m.bg_id);
+            }
+        }
+
+        function paramWidget(node, index, param) {
+            const v = getVal(node, param);
+            const oc = `onchange="editParam(${index}, '${param.key}', this.value)"`;
+            if (param.type === 'enum' || param.type === 'slot' || param.type === 'charId' || param.type === 'expr') {
+                let opts;
+                if (param.type === 'slot') opts = SCH.SLOTS;
+                else if (param.type === 'charId') opts = SCH.CHARACTERS;
+                else if (param.type === 'expr') opts = SCH.EXPRESSIONS;
+                else opts = param.options || {};
+                let h = `<select ${oc}>`;
+                let found = false;
+                for (const k in opts) { const sel = (+k === +v) ? 'selected' : ''; if (sel) found = true; h += `<option value="${k}" ${sel}>${k}: ${esc(opts[k])}</option>`; }
+                if (!found) h += `<option value="${v}" selected>${v}: (custom)</option>`;
+                return h + `</select>`;
+            }
+            if (param.type === 'operand') {
+                const tag = (node.args && node.args[param.ai + 1] !== undefined) ? ((node.args[param.ai + 1] >> 12) & 0xf) : 2;
+                const tagOpts = { 2: "literal", 0: "local var", 1: "global var", 3: "-1" };
+                let th = `<select onchange="editTag(${index}, ${param.ai}, this.value)">`;
+                for (const k in tagOpts) th += `<option value="${k}" ${+k === tag ? 'selected' : ''}>${tagOpts[k]}</option>`;
+                th += `</select>`;
+                return `<div class="op-ref">${th}<input type="number" value="${v}" ${oc}></div>`;
+            }
+            const mn = param.min !== undefined ? `min="${param.min}"` : '', mx = param.max !== undefined ? `max="${param.max}"` : '';
+            return `<input type="number" value="${v}" ${mn} ${mx} ${oc}>`;
+        }
+
+        function editParam(index, key, value) {
+            const node = scriptNodes[index]; const d = schemaFor(node); if (!d) return;
+            const param = d.params.find(p => p.key === key); if (!param) return;
+            setVal(node, param, value);
+            renderInspector(index);
+            renderTree();
+            reExecIfActive(index);
+        }
+        function editTag(index, ai, tagVal) {
+            const node = scriptNodes[index]; if (!node.args) node.args = [];
+            while (node.args.length <= ai + 1) node.args.push(0);
+            node.args[ai + 1] = (parseInt(tagVal, 10) & 0xf) << 12;
+            reExecIfActive(index);
+        }
+        function reExecIfActive(index) { if (index === currentNodeIndex - 1) { try { executeNodeOnCanvas(scriptNodes[index]); } catch (e) {} } }
+
+        function updateArg(nodeIndex, argIndex, newValue) {
+            scriptNodes[nodeIndex].args[argIndex] = parseInt(newValue, 10) || 0;
+            renderInspector(nodeIndex);
+            renderTree();
+            if (nodeIndex === currentNodeIndex - 1) { try { executeNodeOnCanvas(scriptNodes[nodeIndex]); } catch(e){} }
+        }
+
+        // ==================== PALETTE ====================
+        function renderPalette() {
+            const el = document.getElementById('paletteBar');
+            if (!el) return;
+            const byCat = {};
+            for (const op in SCH.OPCODES) { const d = SCH.OPCODES[op]; (byCat[d.cat] = byCat[d.cat] || []).push([op, d.name]); }
+            let opts = '';
+            Object.keys(byCat).sort().forEach(cat => {
+                opts += `<optgroup label="${cat}">`;
+                byCat[cat].sort((a, b) => a[0].localeCompare(b[0])).forEach(([op, nm]) => opts += `<option value="${op}">0x${op} ${esc(nm)}</option>`);
+                opts += `</optgroup>`;
+            });
+            el.innerHTML = `<select id="paletteSel">${opts}</select><button onclick="addSelected()">+ Add</button>`;
+        }
+
+        function buildNewNode(opHex) {
+            const d = SCH.OPCODES[opHex];
+            const node = { id: Date.now(), opcode: opHex, name: d ? d.name : "Unknown", args: [], meta: {} };
+            if (d && d.text) { node.jp_text = ""; node.en_text = ""; node.meta.string_index = 0; }
+            if (d && d.params) {
+                let maxAi = -1; d.params.forEach(p => { if (p.ai > maxAi) maxAi = p.ai; });
+                for (let i = 0; i <= maxAi + 1; i++) node.args.push(0);
+                const used = new Set(d.params.map(p => p.ai));
+                d.params.forEach(p => { if (p.ai < 0) return; if ((p.type === 'operand') && !used.has(p.ai + 1)) node.args[p.ai + 1] = 2 << 12; });
+                d.params.forEach(p => setVal(node, p, 0));
+            }
+            return node;
+        }
+        function reindexStringTable() {
+            let idx = 0;
+            for (const n of scriptNodes) {
+                if (n.opcode === '0011' || n.opcode === '000F') {
+                    n.meta = n.meta || {};
+                    n.meta.string_index = idx;
+                    if (n.args && n.args.length > 0) n.args[0] = idx;
+                    idx++;
+                }
+            }
+        }
+        function addSelected() {
+            const sel = document.getElementById('paletteSel'); if (!sel) return;
+            const at = (currentNodeIndex >= 0 && currentNodeIndex <= scriptNodes.length) ? currentNodeIndex : scriptNodes.length;
+            scriptNodes.splice(at, 0, buildNewNode(sel.value));
+            reindexStringTable();
+            renderTree();
+            renderInspector(at);
+        }
+        function deleteNode(index) {
+            scriptNodes.splice(index, 1);
+            if (currentNodeIndex > index) currentNodeIndex--;
+            reindexStringTable();
+            renderTree();
+            renderInspector(currentNodeIndex - 1);
+        }
+        function moveNode(index, dir) {
+            const j = index + dir; if (j < 0 || j >= scriptNodes.length) return;
+            const t = scriptNodes[index]; scriptNodes[index] = scriptNodes[j]; scriptNodes[j] = t;
+            renderTree();
+            renderInspector(j);
+        }
+
+        // ==================== PLAYBACK ====================
+        function updateVolume(type, val) {
+            const floatVal = parseFloat(val);
+            volState[type] = floatVal;
+            if (type === 'bgm' && currentBGM) currentBGM.volume = floatVal;
+            if (type === 'voice' && currentAudio) currentAudio.volume = floatVal;
+            if (type === 'se' && currentSE) currentSE.volume = floatVal;
+        }
+
+        function createTextBoxUI(slotId) {
+            const config = SLOT_LAYOUTS[slotId];
+            const container = new PIXI.Container();
+
+            const bgGraphic = new PIXI.Graphics();
+            bgGraphic.beginFill(0x0f221e, 0.75);
+            bgGraphic.drawRect(0, 10, 463, 155);
+            bgGraphic.endFill();
+            container.addChild(bgGraphic);
+
+            if (uiBaseTexture) {
+                const piece = (ox,oy,sw,sh,px,py) => {
+                    if (sw<=0||sh<=0) return;
+                    let vw = Math.min(sw, uiBaseTexture.width-ox), vh = Math.min(sh, uiBaseTexture.height-oy);
+                    if (vw<=0||vh<=0) return;
+                    const s = new PIXI.Sprite(new PIXI.Texture(uiBaseTexture.baseTexture, new PIXI.Rectangle(ox,oy,vw,vh)));
+                    s.position.set(px,py);
+                    container.addChild(s);
+                };
+                piece(0,272, 463,32, 0,-7);    // top edge
+                piece(0,306, 463,21, 0,155);   // bottom edge
+                piece(52,0,  24,176, -20,0);   // left edge
+                piece(76,0,  24,176, 463,0);   // right edge
+            }
+
+            let nameTag = null;
+            if (config.hasName) {
+                nameTag = new PIXI.Text('Name', { fontFamily: 'sans-serif', fontSize: 18, fill: 0xffffff, fontWeight: 'bold', padding: 5 });
+                nameTag.anchor.set(0.5, 0);
+                nameTag.position.set(232, 0);
+                container.addChild(nameTag);
+            }
+
+            const dialogue = new PIXI.Text('', { fontFamily: 'sans-serif', fontSize: 19, fill: 0xddffff, wordWrap: true, wordWrapWidth: 430, lineHeight: 26 });
+            dialogue.position.set(15, 25);
+            container.addChild(dialogue);
+
+            container.position.set(config.boxX, config.boxY);
+            container.visible = false;
+            layerUI.addChild(container);
+            return { container, nameTag, dialogue };
+        }
+
+        async function stepNode() {
+            if (currentNodeIndex >= scriptNodes.length) return;
+            const node = scriptNodes[currentNodeIndex];
+            try { await executeNodeOnCanvas(node); } catch (err) { console.error("Canvas execution failed:", err); }
+            currentNodeIndex++;
+            renderTree();
+            scrollTreeToActive();
+            renderInspector(currentNodeIndex - 1);
+        }
+
+        async function jumpToNode(index) { await showNode(index); }
+
+        function resetSceneState() {
+            layerBG.removeChildren(); layerCG.removeChildren(); layerChars.removeChildren();
+            for (let s in activeTextBoxes) { const b = activeTextBoxes[s]; if (b) { b.container.visible = false; b.dialogue.text = ''; if (b.nameTag) b.nameTag.text = ''; } }
+            slotCharacterRegistry = {}; currentActiveSlotId = "0"; currentActiveSpeakerId = null; textLineIndex = 0;
+            loadedBgTextures = [];
+            if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+            if (currentSE) { currentSE.pause(); currentSE = null; }
+        }
+
+        function scanLastBGM(k) {
+            let track = null;
+            for (let i = 0; i <= k && i < scriptNodes.length; i++) {
+                const n = scriptNodes[i];
+                if (n.opcode === '003F' || n.opcode === '003C') { const id = (n.args && n.args.length) ? n.args[0] : 2; track = 'M-' + String(id).padStart(3, '0') + '.mp3'; }
+                else if (n.opcode === '003D') { track = null; }
+            }
+            return track;
+        }
+        function applyBGM(track) {
+            if (!track) { if (currentBGM) { currentBGM.pause(); currentBGM = null; } currentBGMTrack = null; return; }
+            if (track === currentBGMTrack && currentBGM) return;
+            if (currentBGM) currentBGM.pause();
+            try { currentBGM = new Audio('/api/bgm/' + track); currentBGM.volume = volState.bgm; currentBGM.loop = true; currentBGM.play().catch(() => {}); currentBGMTrack = track; } catch (e) {}
+        }
+
+        async function showNode(k) {
+            if (scriptNodes.length === 0) return;
+            playing = false; setPlayBtn();
+            k = Math.max(0, Math.min(k, scriptNodes.length - 1));
+            scrubbing = true;
+            resetSceneState();
+            for (let i = 0; i <= k; i++) { try { await executeNodeOnCanvas(scriptNodes[i]); } catch (e) {} }
+            scrubbing = false;
+            applyBGM(scanLastBGM(k));
+            const last = scriptNodes[k];
+            if (last && (last.opcode === '0041' || last.opcode === '003E')) { try { await executeNodeOnCanvas(last); } catch (e) {} }
+            currentNodeIndex = k + 1;
+            renderTree();
+            scrollTreeToActive();
+            renderInspector(k);
+        }
+
+        function loadScriptList() {
+            fetch('/api/list_scripts').then(r => r.json()).then(list => {
+                const sel = document.getElementById('scriptPicker'); if (!sel) return;
+                sel.innerHTML = (list || []).map(f => `<option value="${f}">${f}</option>`).join('');
+            }).catch(() => {});
+        }
+        function openScript() {
+            const sel = document.getElementById('scriptPicker'); if (!sel || !sel.value) return;
+            playing = false; setPlayBtn();
+            fetch('/api/load_script?file=' + encodeURIComponent(sel.value)).then(r => r.json()).then(async data => {
+                scriptNodes = data; currentNodeIndex = 0; resetSceneState();
+                await loadPartTextures(sel.value);
+                renderTree(); renderInspector(-1);
+                document.title = 'YBC Editor — ' + sel.value;
+            }).catch(e => alert('Open failed: ' + e));
+        }
+        function onScrub(v) { showNode(parseInt(v, 10) || 0); }
+        function tlFirst() { showNode(0); }
+        function tlPrev() { showNode((currentNodeIndex - 1) - 1); }
+
+        function delayFor(n) {
+            if (!n) return 90;
+            if (n.opcode === '000C' || n.opcode === '000D') { const f = (n.args && n.args.length) ? n.args[0] : 30; return Math.min(4000, Math.max(0, f) / 60 * 1000); }
+            if (n.opcode === '0011') return 1300;
+            if (n.opcode === '0032') return 900;
+            return 90;
+        }
+        function setPlayBtn() { const b = document.getElementById('playBtn'); if (b) b.textContent = playing ? '❚❚ Pause' : '▶ Play'; }
+        async function playPause() {
+            if (playing) { playing = false; setPlayBtn(); if (currentBGM) currentBGM.pause(); return; }
+            if (currentNodeIndex >= scriptNodes.length) currentNodeIndex = 0;
+            playing = true; setPlayBtn();
+            if (currentBGM && currentBGM.paused) currentBGM.play().catch(() => {});
+            while (playing && currentNodeIndex < scriptNodes.length) {
+                const node = scriptNodes[currentNodeIndex];
+                try { await executeNodeOnCanvas(node); } catch (e) {}
+                currentNodeIndex++;
+                renderTree(); scrollTreeToActive(); renderInspector(currentNodeIndex - 1);
+                if (node.opcode === '0032' && currentAudio && !currentAudio.ended && !currentAudio.paused) {
+                    await new Promise(r => {
+                        const fallback = setTimeout(r, 30000);
+                        currentAudio.addEventListener('ended', () => { clearTimeout(fallback); r(); }, { once: true });
+                    });
+                    if (!playing) break;
+                }
+                await new Promise(r => setTimeout(r, delayFor(node)));
+            }
+            playing = false; setPlayBtn();
+        }
+
+        function toggleLanguage() { showEnglish = !showEnglish; renderTree(); renderInspector(currentNodeIndex - 1); }
+
+        function saveScript() {
+            fetch('/api/save_script', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) })
+                .then(res => res.json()).then(data => alert(data.message));
+        }
+        function saveYbc() {
+            const lang = showEnglish ? 'en' : 'jp';
+            if (!confirm(`Compile .ybc using ${lang.toUpperCase()} dialogue?`)) return;
+            fetch('/api/save_ybc?lang=' + lang, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) })
+                .then(res => res.json()).then(data => alert(data.message)).catch(e => alert('Compile failed: ' + e));
+        }
+
+        // ==================== BULK TEXT EDITOR ====================
+        function openBulkTextEditor() {
+            if (!scriptNodes || !scriptNodes.length) { alert('No script loaded.'); return; }
+            const langKey = showEnglish ? 'en_text' : 'jp_text';
+            const lines = [];
+            scriptNodes.forEach((n, i) => {
+                if (n.opcode === '0011' || n.opcode === '000F') {
+                    lines.push({ idx: i, text: n[langKey] || n.jp_text || '' });
+                }
+            });
+            const overlay = document.createElement('div');
+            overlay.className = 'bulk-overlay';
+            overlay.innerHTML = `<div class="bulk-modal">
+                <div class="bulk-modal-header">
+                    <h3>Bulk Text Editor (${showEnglish ? 'EN' : 'JP'}) — ${lines.length} lines</h3>
+                    <div class="bulk-btns">
+                        <button onclick="bulkExportFile()" style="background:#0e639c;color:#fff;">Export .txt</button>
+                        <button onclick="bulkImportFile()" style="background:#0e639c;color:#fff;">Import .txt</button>
+                        <button onclick="bulkApply()" style="background:#228b22;color:#fff;">Apply</button>
+                        <button onclick="closeBulkEditor()" style="background:#5a1d1d;color:#fff;">Cancel</button>
+                    </div>
+                </div>
+                <textarea id="bulkTextArea"></textarea>
+                <div class="bulk-hint">One line per dialogue entry. Line count must match (${lines.length}). Use Export/Import for file-based editing.</div>
+            </div>`;
+            document.body.appendChild(overlay);
+            const ta = overlay.querySelector('textarea');
+            ta.value = lines.map(l => l.text).join('\n');
+            ta.focus();
+        }
+        function closeBulkEditor() {
+            const el = document.querySelector('.bulk-overlay');
+            if (el) el.remove();
+        }
+        function bulkApply() {
+            const ta = document.getElementById('bulkTextArea');
+            if (!ta) return;
+            const langKey = showEnglish ? 'en_text' : 'jp_text';
+            const textNodes = scriptNodes.filter(n => n.opcode === '0011' || n.opcode === '000F');
+            const newLines = ta.value.split('\n');
+            if (newLines.length !== textNodes.length) {
+                alert(`Line count mismatch: expected ${textNodes.length}, got ${newLines.length}. Each dialogue node needs exactly one line.`);
+                return;
+            }
+            textNodes.forEach((n, i) => { n[langKey] = newLines[i]; });
+            reindexStringTable();
+            closeBulkEditor();
+            renderTree();
+            renderInspector(currentNodeIndex - 1);
+        }
+        function bulkExportFile() {
+            const ta = document.getElementById('bulkTextArea');
+            if (!ta) return;
+            const blob = new Blob([ta.value], { type: 'text/plain;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            const name = document.getElementById('scriptPicker')?.value || 'script';
+            a.download = name.replace('.YBC', '').replace('.ybc', '') + '_text.txt';
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+        function bulkImportFile() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.txt';
+            input.onchange = () => {
+                const file = input.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const ta = document.getElementById('bulkTextArea');
+                    if (ta) ta.value = reader.result;
+                };
+                reader.readAsText(file, 'utf-8');
+            };
+            input.click();
+        }
+
+        // ==================== CANVAS EXECUTION ====================
+        async function executeNodeOnCanvas(node) {
+            if (node.opcode === "0043") {
+                layerCG.removeChildren(); layerChars.removeChildren();
+                for (let sId in activeTextBoxes) { if (activeTextBoxes[sId]) activeTextBoxes[sId].container.visible = false; }
+            }
+
+            if (node.opcode === "0045") {
+                try {
+                    const page = node.meta.source_page || 0;
+                    let srcTex = null;
+                    if (page === 0 && partTextures[0]) {
+                        srcTex = partTextures[0];
+                    } else if (page > 0 && loadedBgTextures.length >= page) {
+                        srcTex = loadedBgTextures[page - 1];
+                    } else if (partTextures[page]) {
+                        srcTex = partTextures[page];
+                    } else if (loadedBgTextures.length > 0) {
+                        srcTex = loadedBgTextures[Math.min(page, loadedBgTextures.length - 1)];
+                    }
+                    if (srcTex) {
+                        const sx = node.meta.src_x || 0, sy = node.meta.src_y || 0;
+                        const cw = node.meta.crop_w || 64, ch = node.meta.crop_h || 64;
+                        const clampW = Math.min(cw, srcTex.width - sx);
+                        const clampH = Math.min(ch, srcTex.height - sy);
+                        if (clampW > 0 && clampH > 0) {
+                            const cropped = new PIXI.Texture(srcTex.baseTexture, new PIXI.Rectangle(sx, sy, clampW, clampH));
+                            const cgSprite = new PIXI.Sprite(cropped);
+                            cgSprite.position.set(node.meta.dest_x || 0, node.meta.dest_y || 0);
+                            layerCG.addChild(cgSprite);
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            if ((node.opcode === "003F" || node.opcode === "003C") && !scrubbing) {
+                if (currentBGM) currentBGM.pause();
+                let trackId = node.args && node.args.length > 0 ? node.args[0] : 2;
+                let trackPath = `M-${String(trackId).padStart(3, '0')}.mp3`;
+                try { currentBGM = new Audio(`/api/bgm/${trackPath}`); currentBGM.volume = volState.bgm; currentBGM.loop = true; currentBGM.play().catch(() => {}); } catch (e) {}
+            }
+
+            if (node.opcode === "003E" && !scrubbing) {
+                if (currentSE) currentSE.pause();
+                let trackId = node.args && node.args.length > 0 ? node.args[0] : 1;
+                let trackPath = `SE-${String(trackId).padStart(3, '0')}.mp3`;
+                try { currentSE = new Audio(`/api/se/${trackPath}`); currentSE.volume = volState.se; currentSE.play().catch(() => {}); } catch (e) {}
+            }
+
+            if (node.opcode === "003B") {
+                layerChars.removeChildren(); layerCG.removeChildren();
+                for (let sId in activeTextBoxes) { if (activeTextBoxes[sId]) activeTextBoxes[sId].container.visible = false; }
+                const texture = await PIXI.Assets.load(`/api/image/${node.meta.file}.png`);
+                loadedBgTextures.push(texture);
+                const bgSprite = new PIXI.Sprite(texture);
+                bgSprite.width = app.screen.width; bgSprite.height = app.screen.height;
+                layerBG.removeChildren(); layerBG.addChild(bgSprite);
+            }
+
+            if (node.opcode === "001B") {
+                if (node.args && node.args.length > 0) {
+                    const sId = String(node.args[0]);
+                    const charToRemove = layerChars.getChildByName("slot_char_" + sId);
+                    if (charToRemove) layerChars.removeChild(charToRemove);
+                }
+            }
+
+            if (node.opcode === "001A") {
+                if (node.meta.dest_slot !== undefined) {
+                    let dSlot = String(node.meta.dest_slot);
+                    if (dSlot === "5") { if (activeTextBoxes["1"]) activeTextBoxes["1"].container.visible = false; if (activeTextBoxes["2"]) activeTextBoxes["2"].container.visible = false; }
+                    if (dSlot === "6") { if (activeTextBoxes["3"]) activeTextBoxes["3"].container.visible = false; if (activeTextBoxes["4"]) activeTextBoxes["4"].container.visible = false; }
+                }
+            }
+
+            if (node.opcode === "001E" || node.opcode === "0021") {
+                const sId = node.args && node.args.length > 0 ? String(node.args[0]) : "5";
+                slotCharacterRegistry[sId] = { id: String(node.meta.char_id), name_jp: node.meta.char_name_jp, name_en: node.meta.char_name_en };
+
+                if (sId === "5") { if (activeTextBoxes["1"]) activeTextBoxes["1"].container.visible = false; if (activeTextBoxes["2"]) activeTextBoxes["2"].container.visible = false; }
+                if (sId === "6") { if (activeTextBoxes["3"]) activeTextBoxes["3"].container.visible = false; if (activeTextBoxes["4"]) activeTextBoxes["4"].container.visible = false; }
+
+                let texture;
+                try { texture = await PIXI.Assets.load(`/api/image/${node.meta.file}.png`); } catch (e) { texture = PIXI.Texture.EMPTY; }
+
+                const charContainer = new PIXI.Container();
+                const isSC = node.meta.file.toLowerCase().startsWith("sc");
+                try {
+                    if (isSC) {
+                        charContainer.addChild(new PIXI.Sprite(texture));
+                    } else {
+                        const atlas = SPRITE_ATLAS["DEFAULT"];
+                        const expr = node.meta.expression || 0;
+                        const bodySprite = new PIXI.Sprite(new PIXI.Texture(texture.baseTexture, new PIXI.Rectangle(atlas.base.x, atlas.base.y, atlas.base.w, atlas.base.h)));
+                        let faceCol = expr % 4, faceRow = Math.floor(expr / 4);
+                        let srcX = atlas.faces.startX + (faceCol * atlas.faces.w), srcY = atlas.faces.startY + (faceRow * atlas.faces.h);
+                        const faceSprite = new PIXI.Sprite(new PIXI.Texture(texture.baseTexture, new PIXI.Rectangle(srcX, srcY, atlas.faces.w, atlas.faces.h)));
+                        const foff = FACE_OFFSETS[node.meta.char_id] || atlas.faceOffset;
+                        faceSprite.position.set(foff.x, foff.y);
+                        charContainer.addChild(bodySprite, faceSprite);
+                    }
+                } catch (e) { charContainer.addChild(new PIXI.Sprite(texture)); }
+
+                const layout = SLOT_LAYOUTS[sId];
+                if (layout) charContainer.position.set(layout.charX, layout.charY);
+                const slotName = "slot_char_" + sId;
+                const oldChar = layerChars.getChildByName(slotName);
+                if (oldChar) layerChars.removeChild(oldChar);
+                charContainer.name = slotName;
+                layerChars.addChild(charContainer);
+            }
+
+            if (node.opcode === "002B") {
+                if (node.args && node.args.length > 0) {
+                    let sId = String(node.args[0]);
+                    currentActiveSlotId = (sId === "0" || sId === "255" || sId === "65535") ? "0" : sId;
+                    textLineIndex = 0;
+                    const tb = activeTextBoxes[currentActiveSlotId];
+                    if (tb) tb.dialogue.text = '';
+                }
+            }
+
+            if (node.opcode === "0028") {
+                if (node.args && node.args.length > 0) currentActiveSpeakerId = String(node.args[0]);
+            }
+
+            if (node.opcode === "0041" && !scrubbing) {
+                if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+                if (voiceMap) {
+                    const groupId = String(node.args[0]);
+                    const voiceIndex = node.args[1];
+                    try {
+                        const filename = voiceMap[groupId][voiceIndex];
+                        if (filename) {
+                            const folderPrefix = "V" + groupId.padStart(3, '0');
+                            currentAudio = new Audio(`/api/voice/${folderPrefix}/${filename}`);
+                            currentAudio.volume = volState.voice;
+                            currentAudio.play().catch(() => {});
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            if (node.opcode === "0011") {
+                let targetSlotId = currentActiveSlotId;
+                if (!activeTextBoxes[targetSlotId]) targetSlotId = "0";
+                const targetBox = activeTextBoxes[targetSlotId];
+                const registryInfo = slotCharacterRegistry[targetSlotId];
+                if (targetBox) {
+                    targetBox.container.visible = true;
+                    if (targetBox.nameTag) {
+                        targetBox.nameTag.text = (registryInfo && targetSlotId !== "0" && SLOT_LAYOUTS[targetSlotId].hasName) ? (showEnglish ? registryInfo.name_en : registryInfo.name_jp) : "";
+                    }
+                    let printedText = showEnglish ? (node.en_text || "") : node.jp_text;
+                    if (textLineIndex === 0) targetBox.dialogue.text = printedText;
+                    else targetBox.dialogue.text += "\n" + printedText;
+                    textLineIndex++;
+                }
+            }
+
+            if (node.opcode === "0014" || node.opcode === "001C" || node.opcode === "0033" || node.opcode === "0032" || node.opcode === "0012") {
+                textLineIndex = 0;
+                if (node.opcode === "0032" || node.opcode === "0014" || node.opcode === "001C") layerCG.removeChildren();
+                if (node.opcode === "0014" || node.opcode === "001C") { for (let sId in activeTextBoxes) activeTextBoxes[sId].container.visible = false; }
+                if (node.opcode === "0033" && currentAudio) { currentAudio.pause(); currentAudio = null; }
+            }
+        }
+
+        // ==================== HOTSPOT OVERLAY ====================
+        let activeHotspotNodeIndex = -1;
+        const HOTSPOT_COLORS = [0x4fc1ff, 0xc586c0, 0x4ec9b0, 0xdcdcaa, 0xce9178, 0xb5cea8, 0xd7ba7d, 0xd16969];
+
+        function renderHotspots(nodeIndex) {
+            layerHotspots.removeChildren();
+            activeHotspotNodeIndex = -1;
+            if (nodeIndex < 0 || nodeIndex >= scriptNodes.length) return;
+            const node = scriptNodes[nodeIndex];
+            if (node.opcode !== '0034' || !node.meta || !node.meta.hotspots) return;
+            activeHotspotNodeIndex = nodeIndex;
+            node.meta.hotspots.forEach((hs, i) => {
+                const color = HOTSPOT_COLORS[i % HOTSPOT_COLORS.length];
+                const g = new PIXI.Graphics();
+                g.lineStyle(2, color, 1);
+                g.beginFill(color, 0.2);
+                g.drawRect(0, 0, hs.w, hs.h);
+                g.endFill();
+                g.position.set(hs.x, hs.y);
+                g.eventMode = 'static';
+                g.cursor = 'move';
+                const label = new PIXI.Text(`${i}`, { fontSize: 12, fill: 0xffffff, fontWeight: 'bold' });
+                label.position.set(4, 2);
+                g.addChild(label);
+                let dragging = false, dragStart = {x:0,y:0}, origPos = {x:0,y:0};
+                g.on('pointerdown', (e) => {
+                    dragging = true;
+                    dragStart = { x: e.global.x, y: e.global.y };
+                    origPos = { x: g.x, y: g.y };
+                    e.stopPropagation();
+                });
+                app.stage.on('pointermove', (e) => {
+                    if (!dragging) return;
+                    const scale = app.view.getBoundingClientRect().width / 1024;
+                    const dx = (e.global.x - dragStart.x) / scale;
+                    const dy = (e.global.y - dragStart.y) / scale;
+                    g.position.set(Math.round(origPos.x + dx), Math.round(origPos.y + dy));
+                });
+                const endDrag = () => {
+                    if (!dragging) return;
+                    dragging = false;
+                    hs.x = Math.round(g.x);
+                    hs.y = Math.round(g.y);
+                    syncHotspotsToArgs(node);
+                    renderInspector(nodeIndex);
+                };
+                app.stage.on('pointerup', endDrag);
+                app.stage.on('pointerupoutside', endDrag);
+                layerHotspots.addChild(g);
+            });
+        }
+
+        function syncHotspotsToArgs(node) {
+            if (!node.meta || !node.meta.hotspots) return;
+            const hs = node.meta.hotspots;
+            const count = hs.length;
+            const args = [];
+            args.push(count, 0);
+            args.push(node.meta.layout_param || 3, 12288);
+            args.push(node.meta.default_goto || 0, 0);
+            hs.forEach(h => {
+                args.push(h.goto || 0, 0);
+                args.push(h.x, 8192);
+                args.push(h.y, 8192);
+                args.push(h.w, 8192);
+                args.push(h.h, 8192);
+            });
+            if (node.meta.fallback_goto !== undefined) args.push(node.meta.fallback_goto, 0);
+            node.args = args;
+        }
+
+        function editHotspot(nodeIdx, hsIdx, field, value) {
+            const node = scriptNodes[nodeIdx];
+            if (!node || !node.meta || !node.meta.hotspots || !node.meta.hotspots[hsIdx]) return;
+            node.meta.hotspots[hsIdx][field] = parseInt(value, 10) || 0;
+            syncHotspotsToArgs(node);
+            renderHotspots(nodeIdx);
+        }
+
+        function editHotspotMeta(nodeIdx, field, value) {
+            const node = scriptNodes[nodeIdx];
+            if (!node || !node.meta) return;
+            node.meta[field] = parseInt(value, 10) || 0;
+            syncHotspotsToArgs(node);
+        }
+
+        // ==================== INIT ====================
+        async function initializeInterface() {
+            renderPalette();
+
+            try { uiBaseTexture = await PIXI.Assets.load('/api/image/Gybc_00.bin.png'); } catch(e) {}
+            for (let sId in SLOT_LAYOUTS) activeTextBoxes[sId] = createTextBoxUI(sId);
+
+            try { voiceMap = await fetch('/voice_mapping.json').then(res => res.json()); } catch (e) {}
+
+            loadScriptList();
+            fetch('/api/load_script').then(res => res.json()).then(data => {
+                scriptNodes = data;
+                renderTree();
+                renderInspector(-1);
+            });
+        }
+
+        initializeInterface();
+    </script>
+</body>
+</html>
