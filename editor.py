@@ -345,6 +345,7 @@ def _build_string_table(nodes, orig, o3, lang):
         data = (t or "").encode('cp932', 'replace') + b'\x00'
         if len(data) % 2: data += b'\x00'   # strings are even-length
         return data
+    seen = set()
     for n in nodes:
         if n.get("opcode") not in ("0011", "000F"):
             continue
@@ -353,8 +354,9 @@ def _build_string_table(nodes, orig, o3, lang):
         chosen = (n.get("en_text") or n.get("jp_text") or "") if lang == "en" else (n.get("jp_text") or "")
         if si is None or si < 0 or si >= len(new):   # new dialogue line → append
             si = len(new); new.append(enc(chosen)); cur.append(chosen)
-        elif chosen != cur[si]:                       # edited → re-encode
+        elif si not in seen and chosen != cur[si]:    # edited → re-encode (first writer wins)
             new[si] = enc(chosen); cur[si] = chosen
+        seen.add(si)
         m["string_index"] = si
         n["args"][0] = si                             # both 0x11 and 0x0F carry the index as first operand
     # serialize: [total][ (rel u16, len*16 u16) × total ][contiguous blob]
