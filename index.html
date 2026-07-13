@@ -73,12 +73,26 @@
 
         /* Bulk text editor modal */
         .bulk-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 9999; display: flex; align-items: center; justify-content: center; }
-        .bulk-modal { background: #1e1e1e; border: 1px solid #555; border-radius: 6px; width: 80vw; max-width: 900px; height: 80vh; display: flex; flex-direction: column; }
+        .bulk-modal { background: #1e1e1e; border: 1px solid #555; border-radius: 6px; width: 85vw; max-width: 1100px; height: 80vh; display: flex; flex-direction: column; }
         .bulk-modal-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #333; }
         .bulk-modal-header h3 { margin: 0; color: #d7ba7d; font-size: 14px; }
         .bulk-modal-header .bulk-btns { display: flex; gap: 6px; }
         .bulk-modal-header button { padding: 5px 14px; font-size: 12px; border-radius: 3px; cursor: pointer; border: 1px solid #555; }
-        .bulk-modal textarea { flex: 1; background: #252526; color: #d4d4d4; border: none; padding: 12px 16px; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; line-height: 1.6; resize: none; outline: none; }
+        .bulk-body { flex: 1; display: flex; overflow: hidden; position: relative; }
+        .bulk-gutter { width: 180px; min-width: 180px; background: #181818; border-right: 1px solid #333; overflow: hidden; font-family: 'Consolas','Courier New',monospace; font-size: 13px; line-height: 21px; padding: 12px 0; user-select: none; }
+        .bulk-gutter-line { height: 21px; padding: 0 6px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #555; box-sizing: border-box; display: flex; align-items: center; border-left: 3px solid transparent; }
+        .bulk-gutter-num { width: 32px; text-align: right; color: #555; flex-shrink: 0; padding-right: 6px; font-size: 11px; }
+        .bulk-gutter-spk { flex: 1; overflow: hidden; text-overflow: ellipsis; font-size: 11px; padding-left: 4px; }
+        .bulk-gutter-line.speaker-start { box-shadow: inset 0 1px 0 0 #4fc1ff44; }
+        .bulk-gutter-line.speaker-start .bulk-gutter-spk { color: #4fc1ff; font-weight: bold; }
+        .bulk-gutter-line.slot-left { border-left: 3px solid #4ec9b0; }
+        .bulk-gutter-line.slot-right { border-left: 3px solid #ce9178; }
+        .bulk-gutter-line.slot-narrator { border-left: 3px solid #666; }
+        .bulk-ta-wrap { flex: 1; position: relative; background: #252526; overflow: hidden; }
+        .bulk-ta-highlight { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; padding: 12px 16px; font-family: 'Consolas','Courier New',monospace; font-size: 13px; line-height: 21px; white-space: pre; overflow: hidden; }
+        .bulk-ta-highlight div { height: 21px; }
+        .bulk-ta-highlight .line-over { background: rgba(200,40,40,0.25); }
+        .bulk-modal textarea { position: relative; width: 100%; height: 100%; background: transparent; color: #d4d4d4; border: none; padding: 12px 16px; font-family: 'Consolas','Courier New',monospace; font-size: 13px; line-height: 21px; resize: none; outline: none; box-sizing: border-box; }
         .bulk-modal .bulk-hint { padding: 6px 16px; font-size: 11px; color: #888; border-top: 1px solid #333; }
     </style>
 </head>
@@ -513,7 +527,7 @@
         function buildNewNode(opHex) {
             const d = SCH.OPCODES[opHex];
             const node = { id: Date.now(), opcode: opHex, name: d ? d.name : "Unknown", args: [], meta: {} };
-            if (d && d.text) { node.jp_text = ""; node.en_text = ""; node.meta.string_index = 0; }
+            if (d && d.text) { node.jp_text = ""; node.en_text = ""; node.meta.string_index = -1; }
             if (d && d.params) {
                 let maxAi = -1; d.params.forEach(p => { if (p.ai > maxAi) maxAi = p.ai; });
                 for (let i = 0; i <= maxAi + 1; i++) node.args.push(0);
@@ -523,29 +537,16 @@
             }
             return node;
         }
-        function reindexStringTable() {
-            let idx = 0;
-            for (const n of scriptNodes) {
-                if (n.opcode === '0011' || n.opcode === '000F') {
-                    n.meta = n.meta || {};
-                    n.meta.string_index = idx;
-                    if (n.args && n.args.length > 0) n.args[0] = idx;
-                    idx++;
-                }
-            }
-        }
         function addSelected() {
             const sel = document.getElementById('paletteSel'); if (!sel) return;
             const at = (currentNodeIndex >= 0 && currentNodeIndex <= scriptNodes.length) ? currentNodeIndex : scriptNodes.length;
             scriptNodes.splice(at, 0, buildNewNode(sel.value));
-            reindexStringTable();
             renderTree();
             renderInspector(at);
         }
         function deleteNode(index) {
             scriptNodes.splice(index, 1);
             if (currentNodeIndex > index) currentNodeIndex--;
-            reindexStringTable();
             renderTree();
             renderInspector(currentNodeIndex - 1);
         }
@@ -729,10 +730,23 @@
         function openBulkTextEditor() {
             if (!scriptNodes || !scriptNodes.length) { alert('No script loaded.'); return; }
             const langKey = showEnglish ? 'en_text' : 'jp_text';
+            const SLOT_NAMES = {0:'Narrator',1:'Center',2:'Left',3:'Right',4:'Right',5:'Left(main)',6:'Right(main)',7:'Sub-TL',8:'Sub-MR',9:'Sub-BL',10:'Sub-ML',11:'Sub-MR'};
+            const CHAR_NAMES = {1:'Carrot',2:'Sharon',3:'Palmira',4:'Cecilis',5:'Fana',6:'Arshe',7:'Rosaria',8:'Quest',9:'Ilion',10:'Oskil',11:'Sirius',12:'Nee',13:'Yury',14:'Axel',15:'Kris',16:'Grave',17:'Baldi',18:'Flicka',101:'Carrot(alt)',130:'Sharon(alt)'};
             const lines = [];
+            let curSlot = -1, pendingName = '';
+            const slotSpeakers = {};
             scriptNodes.forEach((n, i) => {
-                if (n.opcode === '0011' || n.opcode === '000F') {
-                    lines.push({ idx: i, text: n[langKey] || n.jp_text || '' });
+                if (n.opcode === '0028' && n.meta) {
+                    pendingName = CHAR_NAMES[n.meta.char_id] || ('Char'+n.meta.char_id);
+                }
+                if (n.opcode === '002B') {
+                    curSlot = n.meta?.slot_id != null ? n.meta.slot_id : (n.args?.[0] ?? curSlot);
+                    if (pendingName) { slotSpeakers[curSlot] = pendingName; pendingName = ''; }
+                }
+                if (n.opcode === '0011') {
+                    if (pendingName) { slotSpeakers[curSlot] = pendingName; pendingName = ''; }
+                    const speaker = slotSpeakers[curSlot] || SLOT_NAMES[curSlot] || ('Slot'+curSlot);
+                    lines.push({ idx: i, text: n[langKey] || n.jp_text || '', speaker, slot: curSlot });
                 }
             });
             const overlay = document.createElement('div');
@@ -747,12 +761,64 @@
                         <button onclick="closeBulkEditor()" style="background:#5a1d1d;color:#fff;">Cancel</button>
                     </div>
                 </div>
-                <textarea id="bulkTextArea"></textarea>
-                <div class="bulk-hint">One line per dialogue entry. Line count must match (${lines.length}). Use Export/Import for file-based editing.</div>
+                <div class="bulk-body">
+                    <div class="bulk-gutter" id="bulkGutter"></div>
+                    <div class="bulk-ta-wrap">
+                        <div class="bulk-ta-highlight" id="bulkHighlight"></div>
+                        <textarea id="bulkTextArea"></textarea>
+                    </div>
+                </div>
+                <div class="bulk-hint">One line per dialogue entry. Line count must match (${lines.length}). Speaker labels on left show who speaks each line. <span style="color:#c82828">■</span> over 40 chars  <span style="color:#4ec9b0">■</span> left slot  <span style="color:#ce9178">■</span> right slot  <span style="color:#888">■</span> narrator</div>
             </div>`;
             document.body.appendChild(overlay);
-            const ta = overlay.querySelector('textarea');
+            const ta = overlay.querySelector('#bulkTextArea');
+            const gutter = overlay.querySelector('#bulkGutter');
+            // Pre-compute speaker blocks (start line, end line, speaker name)
+            const blocks = [];
+            let prevSpeaker = '', prevSlot = -1;
+            lines.forEach((l, i) => {
+                const isNew = (l.speaker !== prevSpeaker || l.slot !== prevSlot);
+                if (isNew) blocks.push({ start: i, end: i, speaker: l.speaker, slot: l.slot });
+                else if (blocks.length) blocks[blocks.length-1].end = i;
+                prevSpeaker = l.speaker; prevSlot = l.slot;
+            });
+            const blockByLine = new Array(lines.length);
+            blocks.forEach(b => { for (let i = b.start; i <= b.end; i++) blockByLine[i] = b; });
+
+            lines.forEach((l, i) => {
+                const div = document.createElement('div');
+                div.className = 'bulk-gutter-line';
+                const blk = blockByLine[i];
+                const isStart = blk && blk.start === i;
+                if (isStart) div.classList.add('speaker-start');
+                if ([5,7,10,2].includes(l.slot)) div.classList.add('slot-left');
+                else if ([6,3,4,8,11].includes(l.slot)) div.classList.add('slot-right');
+                else div.classList.add('slot-narrator');
+
+                const numSpan = document.createElement('span');
+                numSpan.className = 'bulk-gutter-num';
+                numSpan.textContent = i + 1;
+
+                const spkSpan = document.createElement('span');
+                spkSpan.className = 'bulk-gutter-spk';
+                if (isStart && blk) {
+                    const rangeLen = blk.end - blk.start + 1;
+                    spkSpan.textContent = rangeLen > 1 ? `${blk.speaker} (${rangeLen})` : blk.speaker;
+                }
+                div.appendChild(numSpan);
+                div.appendChild(spkSpan);
+                div.title = `Line ${i+1} | ${l.speaker || 'No name'} | ${SLOT_NAMES[l.slot] || 'Slot '+l.slot}`;
+                gutter.appendChild(div);
+            });
             ta.value = lines.map(l => l.text).join('\n');
+            const hl = overlay.querySelector('#bulkHighlight');
+            function updateHighlights() {
+                const textLines = ta.value.split('\n');
+                hl.innerHTML = textLines.map(l => `<div${l.length > 40 ? ' class="line-over"' : ''}></div>`).join('');
+            }
+            updateHighlights();
+            ta.addEventListener('input', updateHighlights);
+            ta.addEventListener('scroll', () => { gutter.scrollTop = ta.scrollTop; hl.style.transform = `translateY(-${ta.scrollTop}px)`; });
             ta.focus();
         }
         function closeBulkEditor() {
@@ -763,14 +829,13 @@
             const ta = document.getElementById('bulkTextArea');
             if (!ta) return;
             const langKey = showEnglish ? 'en_text' : 'jp_text';
-            const textNodes = scriptNodes.filter(n => n.opcode === '0011' || n.opcode === '000F');
+            const textNodes = scriptNodes.filter(n => n.opcode === '0011');
             const newLines = ta.value.split('\n');
             if (newLines.length !== textNodes.length) {
                 alert(`Line count mismatch: expected ${textNodes.length}, got ${newLines.length}. Each dialogue node needs exactly one line.`);
                 return;
             }
             textNodes.forEach((n, i) => { n[langKey] = newLines[i]; });
-            reindexStringTable();
             closeBulkEditor();
             renderTree();
             renderInspector(currentNodeIndex - 1);
