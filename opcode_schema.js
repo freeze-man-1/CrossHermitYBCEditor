@@ -24,9 +24,15 @@ const SLOTS = {
   7:"Sub – Top-Left", 8:"Sub – Mid-Right", 9:"Sub – Bottom-Left", 10:"Sub – Mid-Left", 11:"Sub – Mid-Right"
 };
 const CHARACTERS = {
-  1:"Carrot",2:"Sharon",3:"Palmira",4:"Cecilis",5:"Fana",6:"Arshe",7:"Rosaria",8:"Quest",9:"Ilion",
-  10:"Oskil",11:"Sirius",12:"Nee",13:"Yury",14:"Axel",15:"Kris",16:"Grave",17:"Baldi",18:"Flicka",
-  101:"Carrot (alt)",130:"Sharon (alt)"
+  1:"Carrott",2:"Sharron",3:"Pamela",4:"Cecilis",5:"Fana",6:"Elshe",7:"Rosaria",8:"Quest",9:"Ilian",
+  10:"Ogier",11:"Sirius",12:"Niu",13:"Yuli",14:"Axo",15:"Chris",16:"Gulliver",17:"Baldr",18:"Fricka",
+  19:"Cadmus",20:"Pyros",21:"Yudi",22:"Elle",23:"Sheila",24:"Feldner",25:"Iona",26:"Kifa",
+  27:"Nefteka",28:"Husband",29:"Mabella",30:"Myura",31:"Lilith",32:"Yerufa",33:"Sherufa",
+  34:"Jacoban",35:"Sharron",36:"Denesia",
+  101:"Denesia",102:"Barbara",103:"Ogyon",104:"Rubigia",105:"Brachy",106:"Niehu",107:"Bowbes",
+  108:"Bob",109:"Lepin",110:"Papeshu",111:"Fiore",112:"Schneider",113:"Nebiros",114:"Nazreg",
+  115:"Cheryl",116:"Lofri",117:"Hermit",118:"Hermit",119:"Hermit",120:"Ouroboros",
+  130:"Sharron (alt)"
 };
 const EXPRESSIONS = {0:"Face 0 (neutral)",1:"Face 1",2:"Face 2",3:"Face 3",4:"Face 4",5:"Face 5",6:"Face 6",7:"Face 7"};
 const CMP_OPS   = {1:"==",2:"!=",3:">",4:">=",5:"<",6:"<="};

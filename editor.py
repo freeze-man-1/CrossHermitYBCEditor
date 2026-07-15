@@ -18,15 +18,35 @@ os.makedirs(BGM_DIR, exist_ok=True) # Ensure BGM dir exists
 
 # --- Character ID Mapping Table ---
 CHARACTER_MAP = {
-    1: {"jp": "キャロット", "en": "Carrot"}, 2: {"jp": "シャロン", "en": "Sharon"},
-    3: {"jp": "パルミラ", "en": "Palmira"}, 4: {"jp": "セシリス", "en": "Cecilis"},
-    5: {"jp": "ファナ", "en": "Fana"}, 6: {"jp": "アルシェ", "en": "Arshe"},
+    1: {"jp": "キャロット", "en": "Carrott"}, 2: {"jp": "シャロン", "en": "Sharron"},
+    3: {"jp": "パルミラ", "en": "Pamela"}, 4: {"jp": "セシリス", "en": "Cecilis"},
+    5: {"jp": "ファナ", "en": "Fana"}, 6: {"jp": "アルシェ", "en": "Elshe"},
     7: {"jp": "ロザリア", "en": "Rosaria"}, 8: {"jp": "クエスト", "en": "Quest"},
-    9: {"jp": "イリオン", "en": "Ilion"}, 10: {"jp": "オスキル", "en": "Oskil"},
-    11: {"jp": "シリウス", "en": "Sirius"}, 12: {"jp": "ニー", "en": "Nee"},
-    13: {"jp": "ユーリィ", "en": "Yury"}, 14: {"jp": "アクセル", "en": "Axel"},
-    15: {"jp": "クリス", "en": "Kris"}, 16: {"jp": "グレイブ", "en": "Grave"},
-    17: {"jp": "バルディ", "en": "Baldi"}, 18: {"jp": "フリッカ", "en": "Flicka"}
+    9: {"jp": "イリオン", "en": "Ilian"}, 10: {"jp": "オスキル", "en": "Ogier"},
+    11: {"jp": "シリウス", "en": "Sirius"}, 12: {"jp": "ニー", "en": "Niu"},
+    13: {"jp": "ユーリィ", "en": "Yuli"}, 14: {"jp": "アクセル", "en": "Axo"},
+    15: {"jp": "クリス", "en": "Chris"}, 16: {"jp": "グレイブ", "en": "Gulliver"},
+    17: {"jp": "バルディ", "en": "Baldr"}, 18: {"jp": "フリッカ", "en": "Fricka"},
+    # 19+ native names taken from the Chinese release nameplate table
+    19: {"jp": "加德摩斯", "en": "Cadmus"}, 20: {"jp": "派洛斯", "en": "Pyros"},
+    21: {"jp": "昱荻", "en": "Yudi"}, 22: {"jp": "艾蕾", "en": "Elle"},
+    23: {"jp": "席菈", "en": "Sheila"}, 24: {"jp": "費爾德訥", "en": "Feldner"},
+    25: {"jp": "伊歐娜", "en": "Iona"}, 26: {"jp": "奇法", "en": "Kifa"},
+    27: {"jp": "娜芙忒卡", "en": "Nefteka"}, 28: {"jp": "哈茲班", "en": "Husband"},
+    29: {"jp": "瑪貝菈", "en": "Mabella"}, 30: {"jp": "謬菈", "en": "Myura"},
+    31: {"jp": "莉莉絲", "en": "Lilith"}, 32: {"jp": "耶魯法", "en": "Yerufa"},
+    33: {"jp": "雪荋法", "en": "Sherufa"}, 34: {"jp": "傑可班", "en": "Jacoban"},
+    35: {"jp": "夏朧", "en": "Sharron"}, 36: {"jp": "德涅希亞", "en": "Denesia"},
+    101: {"jp": "德涅西亞", "en": "Denesia"}, 102: {"jp": "巴爾巴拉", "en": "Barbara"},
+    103: {"jp": "歐吉翁", "en": "Ogyon"}, 104: {"jp": "魯比格亞", "en": "Rubigia"},
+    105: {"jp": "布拉奇", "en": "Brachy"}, 106: {"jp": "聶葫", "en": "Niehu"},
+    107: {"jp": "鮑貝斯", "en": "Bowbes"}, 108: {"jp": "鮑伯", "en": "Bob"},
+    109: {"jp": "蕾芃", "en": "Lepin"}, 110: {"jp": "帕佩修", "en": "Papeshu"},
+    111: {"jp": "菲歐里歐", "en": "Fiore"}, 112: {"jp": "修奈鐸", "en": "Schneider"},
+    113: {"jp": "奈比洛斯", "en": "Nebiros"}, 114: {"jp": "納茲雷古", "en": "Nazreg"},
+    115: {"jp": "薛莉爾", "en": "Cheryl"}, 116: {"jp": "羅弗利", "en": "Lofri"},
+    117: {"jp": "隱者", "en": "Hermit"}, 118: {"jp": "隱者", "en": "Hermit"},
+    119: {"jp": "隱者", "en": "Hermit"}, 120: {"jp": "烏洛波羅斯", "en": "Ouroboros"}
 }
 
 LUT_LIST = []
@@ -63,7 +83,10 @@ def parse_arguments(data):
         args.append(struct.unpack('<h', data[i:i+2])[0])
     return args
 
-def ybc_to_json(filepath):
+VALID_ENCODINGS = ('cp932', 'big5', 'gb18030')
+
+def ybc_to_json(filepath, enc='cp932'):
+    if enc not in VALID_ENCODINGS: enc = 'cp932'
     nodes = []
     if not os.path.exists(filepath): return nodes
         
@@ -82,7 +105,7 @@ def ybc_to_json(filepath):
             table_pos = f.tell()
             f.seek(offset3 + rel_offset)
             raw_string = f.read(length_data // 16)
-            try: strings[i] = raw_string.decode('cp932').replace('\x00', '').replace('\u3000', ' ')
+            try: strings[i] = raw_string.decode(enc).replace('\x00', '').replace('\u3000', ' ')
             except: strings[i] = ""
             f.seek(table_pos)
 
@@ -319,11 +342,25 @@ def ybc_to_json(filepath):
         elif op == 0x0B and len(a) >= 2:        tgt = (a[0] & 0xFFFF) | (a[1] << 16)
         if tgt is not None and tgt in off2idx:
             n["_target"] = nodes[off2idx[tgt]]["id"]   # stable node id, survives reorder/insert
+        # multi-target opcodes: map {argIndex: nodeId} (string keys — survives JSON)
+        tmap = {}
+        def _link(idx):
+            if len(a) >= idx + 2:
+                t = (a[idx] & 0xFFFF) | (a[idx + 1] << 16)
+                if t in off2idx: tmap[str(idx)] = nodes[off2idx[t]]["id"]
+        if op in (0x01, 0x02): _link(0)
+        elif op == 0x04:       _link(3)
+        elif op == 0x34 and len(a) >= 6:
+            _link(4)                                   # default_goto
+            count = a[0]
+            for e in range(count): _link(6 + e * 10)   # per-hotspot goto
+            _link(6 + count * 10)                      # fallback_goto
+        if tmap: n["_tmap"] = tmap
 
     return nodes
 
 
-def _read_string_table(orig, o3):
+def _read_string_table(orig, o3, encoding='cp932'):
     """Return (raw_bytes_list, decoded_text_list) for the original string table."""
     total = struct.unpack_from('<I', orig, o3)[0]
     raw, txt = [], []
@@ -331,18 +368,18 @@ def _read_string_table(orig, o3):
         rel, ld = struct.unpack_from('<HH', orig, o3 + 4 + i * 4)
         sb = orig[o3 + rel: o3 + rel + ld // 16]
         raw.append(sb)
-        txt.append(sb.decode('cp932', 'replace').replace('\x00', '').replace('　', ' '))
+        txt.append(sb.decode(encoding, 'replace').replace('\x00', '').replace('　', ' '))
     return raw, txt
 
-def _build_string_table(nodes, orig, o3, lang):
+def _build_string_table(nodes, orig, o3, lang, encoding='cp932'):
     """Rebuild the string table: keep unchanged strings byte-identical, re-encode
     edited 0x11 lines, append new ones. Mutates each 0x11 node's args[0] +
     meta.string_index so the code stream references the right entry."""
-    raw, txt = _read_string_table(orig, o3)
+    raw, txt = _read_string_table(orig, o3, encoding)
     new = list(raw)                 # bytes per index (verbatim by default)
     cur = list(txt)
     def enc(t):
-        data = (t or "").encode('cp932', 'replace') + b'\x00'
+        data = (t or "").encode(encoding, 'replace') + b'\x00'
         if len(data) % 2: data += b'\x00'   # strings are even-length
         return data
     seen = set()
@@ -367,7 +404,7 @@ def _build_string_table(nodes, orig, o3, lang):
         blob += sb
     return struct.pack('<I', total) + bytes(entries) + bytes(blob)
 
-def json_to_ybc(nodes, original_path, lang='jp'):
+def json_to_ybc(nodes, original_path, lang='jp', encoding='cp932'):
     """Rebuild a .ybc binary from edited nodes: rebuilds the code section, relinks
     jump targets, and rebuilds the string table (keeping unedited strings byte-
     identical). Preserves the middle section verbatim.
@@ -378,7 +415,8 @@ def json_to_ybc(nodes, original_path, lang='jp'):
     o1, o2, o3, o4 = struct.unpack_from('<4I', orig, 4)
 
     # 0) rebuild string table first (fixes 0x11 nodes' args before code emit)
-    strings = _build_string_table(nodes, orig, o3, lang)
+    if encoding not in VALID_ENCODINGS: encoding = 'cp932'
+    strings = _build_string_table(nodes, orig, o3, lang, encoding)
 
     # 1) compute each node's new code-relative offset
     offsets, off = [], 0
@@ -389,16 +427,17 @@ def json_to_ybc(nodes, original_path, lang='jp'):
 
     # 2) relink jumps to their target node's new offset (by stable id)
     for i, n in enumerate(nodes):
-        tgt = n.get("_target")
-        if tgt is None or tgt not in id2off:
-            continue
-        to = id2off[tgt]
         op = int(n["opcode"], 16); a = n.setdefault("args", [])
         def setw(idx, val):
             while len(a) <= idx + 1: a.append(0)
             a[idx] = val & 0xFFFF; a[idx + 1] = (val >> 16) & 0xFFFF
-        if op in (0x08, 0x09): setw(6, to)
-        elif op == 0x0B:        setw(0, to)
+        tgt = n.get("_target")
+        if tgt is not None and tgt in id2off:
+            to = id2off[tgt]
+            if op in (0x08, 0x09): setw(6, to)
+            elif op == 0x0B:        setw(0, to)
+        for idx_s, tid in (n.get("_tmap") or {}).items():
+            if tid in id2off: setw(int(idx_s), id2off[tid])
 
     # 3) emit code section
     code = bytearray()
@@ -478,10 +517,38 @@ def load_script():
                         if f.lower().endswith('.ybc'): path = os.path.join(d, f); break
                 if path: break
     CURRENT_YBC = os.path.abspath(path) if path else None
+    enc = request.args.get('enc', 'cp932')
     # only fall back to the saved JSON when no specific file was requested
     if not req and os.path.exists(SCRIPT_JSON):
         with open(SCRIPT_JSON, 'r', encoding='utf-8') as f: return jsonify(json.load(f))
-    return jsonify(ybc_to_json(path) if path else [])
+    return jsonify(ybc_to_json(path, enc) if path else [])
+
+@app.route('/api/compile_ybc', methods=['POST'])
+def compile_ybc():
+    """Compile the edited nodes and return the .ybc binary (no file written server-side;
+    the frontend offers a save dialog so the user picks where it goes)."""
+    try:
+        if not CURRENT_YBC or not os.path.exists(CURRENT_YBC):
+            return jsonify({"status": "error", "message": "No source .ybc loaded"}), 400
+        nodes = request.get_json()
+        lang = request.args.get('lang', 'jp')
+        enc = request.args.get('enc', 'cp932')
+        data = json_to_ybc(nodes, CURRENT_YBC, lang, enc)
+        return send_file(io.BytesIO(data), mimetype='application/octet-stream',
+                         as_attachment=True, download_name=os.path.basename(CURRENT_YBC))
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/string_count')
+def string_count():
+    """Number of entries in the currently loaded .ybc's string table (so the
+    frontend can reserve real indices for newly inserted dialogue lines)."""
+    if not CURRENT_YBC or not os.path.exists(CURRENT_YBC):
+        return jsonify({"count": 0})
+    with open(CURRENT_YBC, 'rb') as f:
+        orig = f.read()
+    o3 = struct.unpack_from('<4I', orig, 4)[2]
+    return jsonify({"count": struct.unpack_from('<I', orig, o3)[0]})
 
 @app.route('/api/save_ybc', methods=['POST'])
 def save_ybc():
@@ -491,7 +558,8 @@ def save_ybc():
             return jsonify({"status": "error", "message": "No source .ybc loaded"}), 400
         nodes = request.get_json()
         lang = request.args.get('lang', 'jp')
-        data = json_to_ybc(nodes, CURRENT_YBC, lang)
+        enc = request.args.get('enc', 'cp932')
+        data = json_to_ybc(nodes, CURRENT_YBC, lang, enc)
         bak = CURRENT_YBC + ".bak"
         if not os.path.exists(bak):
             with open(CURRENT_YBC, 'rb') as f, open(bak, 'wb') as g: g.write(f.read())

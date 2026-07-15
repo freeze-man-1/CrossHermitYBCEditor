@@ -35,6 +35,8 @@
         .viewport-wrap { display: flex; flex-direction: column; align-items: center; padding: 8px; flex: 1; overflow: hidden; }
         #gameCanvasContainer { box-shadow: 0 4px 15px rgba(0,0,0,0.8); border-radius: 4px; overflow: hidden; width: 100%; max-width: 800px; aspect-ratio: 4/3; background: #000; }
         #gameCanvasContainer canvas { width: 100% !important; height: 100% !important; }
+        #gameCanvasContainer:fullscreen { max-width: none; aspect-ratio: auto; border-radius: 0; }
+        #gameCanvasContainer:fullscreen canvas { object-fit: contain; }
         .toolbar { display: flex; gap: 6px; padding: 8px 12px; background: #1b1b1b; border-bottom: 1px solid #333; align-items: center; flex-wrap: wrap; flex-shrink: 0; }
         .toolbar select, .toolbar button { font-size: 12px; }
         .toolbar select { background: #3c3c3c; border: 1px solid #555; color: #d4d4d4; padding: 4px 8px; border-radius: 3px; }
@@ -114,10 +116,16 @@
     <div class="panel-center">
         <div class="toolbar">
             <select id="scriptPicker" title="Choose a .ybc script"></select>
+            <select id="encPicker" title="Source text encoding of the .ybc (re-open the script after changing)">
+                <option value="cp932">JP (CP932)</option>
+                <option value="big5">ZH (Big5)</option>
+                <option value="gb18030">ZH (GB18030)</option>
+            </select>
             <button onclick="openScript()">Open</button>
             <button onclick="toggleLanguage()">JP/EN</button>
             <button style="background:#228b22;border-color:#2e9e2e;" onclick="saveScript()">Save JSON</button>
-            <button style="background:#8a5a00;border-color:#a06a00;" onclick="saveYbc()">Compile .ybc</button>
+            <button style="background:#8a5a00;border-color:#a06a00;" onclick="saveYbc()" title="Compile in place, overwriting the loaded .ybc (a .bak backup is kept)">Compile .ybc</button>
+            <button style="background:#8a5a00;border-color:#a06a00;" onclick="saveYbcAs()" title="Compile and choose where to save the new .ybc">Compile As…</button>
             <button style="background:#6a1b9a;border-color:#8e24aa;" onclick="openBulkTextEditor()">Bulk Text</button>
         </div>
         <div class="viewport-wrap">
@@ -130,6 +138,7 @@
             <button onclick="stepNode()">▶❘</button>
             <input type="range" id="tlSlider" min="0" max="0" value="0" oninput="onScrub(this.value)">
             <span id="tlLabel">0 / 0</span>
+            <button onclick="toggleFullscreen()" title="Fullscreen playback (Esc exits)">⛶</button>
         </div>
         <div class="audio-bar">
             <label>BGM <input type="range" id="vol-bgm" min="0" max="1" step="0.05" value="0.3" oninput="updateVolume('bgm', this.value)"></label>
@@ -196,6 +205,8 @@
         const activeTextBoxes = {};
         let slotCharacterRegistry = {};
         let currentActiveSpeakerId = null;
+        let slotNameplates = {};        // slot id -> {jp, en} set via 0x28 SET_NAMEPLATE
+        let pendingNameplate = null;    // 0x28 seen, waiting for the next 0x2B / 0x11
         let currentActiveSlotId = "0";
 
         let scriptNodes = [];
@@ -313,7 +324,7 @@
             viewport.innerHTML = html;
 
             const sl = document.getElementById('tlSlider');
-            if (sl) sl.max = Math.max(0, scriptNodes.length - 1);
+            if (sl) { sl.max = Math.max(0, scriptNodes.length - 1); sl.value = Math.max(0, currentNodeIndex - 1); }
             const lb = document.getElementById('tlLabel');
             if (lb) lb.textContent = (scriptNodes.length ? Math.min(currentNodeIndex, scriptNodes.length) : 0) + ' / ' + scriptNodes.length;
         }
@@ -625,6 +636,7 @@
             layerBG.removeChildren(); layerCG.removeChildren(); layerChars.removeChildren();
             for (let s in activeTextBoxes) { const b = activeTextBoxes[s]; if (b) { b.container.visible = false; b.dialogue.text = ''; if (b.nameTag) b.nameTag.text = ''; } }
             slotCharacterRegistry = {}; currentActiveSlotId = "0"; currentActiveSpeakerId = null; textLineIndex = 0;
+            slotNameplates = {}; pendingNameplate = null;
             loadedBgTextures = [];
             if (currentAudio) { currentAudio.pause(); currentAudio = null; }
             if (currentSE) { currentSE.pause(); currentSE = null; }
@@ -672,7 +684,8 @@
         function openScript() {
             const sel = document.getElementById('scriptPicker'); if (!sel || !sel.value) return;
             playing = false; setPlayBtn();
-            fetch('/api/load_script?file=' + encodeURIComponent(sel.value)).then(r => r.json()).then(async data => {
+            const enc = document.getElementById('encPicker')?.value || 'cp932';
+            fetch('/api/load_script?file=' + encodeURIComponent(sel.value) + '&enc=' + enc).then(r => r.json()).then(async data => {
                 scriptNodes = data; currentNodeIndex = 0; resetSceneState();
                 await loadPartTextures(sel.value);
                 renderTree(); renderInspector(-1);
@@ -715,15 +728,50 @@
 
         function toggleLanguage() { showEnglish = !showEnglish; renderTree(); renderInspector(currentNodeIndex - 1); }
 
+        function toggleFullscreen() {
+            const el = document.getElementById('gameCanvasContainer');
+            if (document.fullscreenElement) { document.exitFullscreen(); return; }
+            (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+        }
+        // While fullscreen, clicking the canvas toggles play/pause like a video player
+        document.getElementById('gameCanvasContainer').addEventListener('click', () => {
+            if (document.fullscreenElement) playPause();
+        });
+
         function saveScript() {
             fetch('/api/save_script', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) })
                 .then(res => res.json()).then(data => alert(data.message));
         }
         function saveYbc() {
             const lang = showEnglish ? 'en' : 'jp';
-            if (!confirm(`Compile .ybc using ${lang.toUpperCase()} dialogue?`)) return;
-            fetch('/api/save_ybc?lang=' + lang, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) })
+            const enc = document.getElementById('encPicker')?.value || 'cp932';
+            if (!confirm(`Compile .ybc using ${lang.toUpperCase()} dialogue (${enc} encoding)?`)) return;
+            fetch('/api/save_ybc?lang=' + lang + '&enc=' + enc, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) })
                 .then(res => res.json()).then(data => alert(data.message)).catch(e => alert('Compile failed: ' + e));
+        }
+        async function saveYbcAs() {
+            const lang = showEnglish ? 'en' : 'jp';
+            const enc = document.getElementById('encPicker')?.value || 'cp932';
+            try {
+                const res = await fetch('/api/compile_ybc?lang=' + lang + '&enc=' + enc, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) });
+                if (!res.ok) { const err = await res.json().catch(() => ({})); alert('Compile failed: ' + (err.message || res.status)); return; }
+                const blob = await res.blob();
+                const suggested = (document.getElementById('scriptPicker')?.value || 'script.ybc');
+                if (window.showSaveFilePicker) {
+                    try {
+                        const handle = await showSaveFilePicker({ suggestedName: suggested, types: [{ description: 'YBC script', accept: { 'application/octet-stream': ['.ybc'] } }] });
+                        const w = await handle.createWritable();
+                        await w.write(blob); await w.close();
+                        alert('Saved ' + blob.size + ' bytes to ' + handle.name);
+                        return;
+                    } catch (e) { if (e.name === 'AbortError') return; /* fall through to download */ }
+                }
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = suggested;
+                a.click();
+                URL.revokeObjectURL(a.href);
+            } catch (e) { alert('Compile failed: ' + e); }
         }
 
         // ==================== BULK TEXT EDITOR ====================
@@ -731,13 +779,25 @@
             if (!scriptNodes || !scriptNodes.length) { alert('No script loaded.'); return; }
             const langKey = showEnglish ? 'en_text' : 'jp_text';
             const SLOT_NAMES = {0:'Narrator',1:'Center',2:'Left',3:'Right',4:'Right',5:'Left(main)',6:'Right(main)',7:'Sub-TL',8:'Sub-MR',9:'Sub-BL',10:'Sub-ML',11:'Sub-MR'};
-            const CHAR_NAMES = {1:'Carrot',2:'Sharon',3:'Palmira',4:'Cecilis',5:'Fana',6:'Arshe',7:'Rosaria',8:'Quest',9:'Ilion',10:'Oskil',11:'Sirius',12:'Nee',13:'Yury',14:'Axel',15:'Kris',16:'Grave',17:'Baldi',18:'Flicka',101:'Carrot(alt)',130:'Sharon(alt)'};
+            const CHAR_NAMES = SCH.CHARACTERS;
             const lines = [];
             let curSlot = -1, pendingName = '';
-            const slotSpeakers = {};
+            const slotSpeakers = {};   // explicit 0x28 nameplate per slot (wins)
+            const slotPortraits = {};  // character shown in the slot via portrait loads
             scriptNodes.forEach((n, i) => {
                 if (n.opcode === '0028' && n.meta) {
                     pendingName = CHAR_NAMES[n.meta.char_id] || ('Char'+n.meta.char_id);
+                }
+                if ((n.opcode === '001E' || n.opcode === '0021') && n.meta?.char_id != null && n.meta.speech_box != null) {
+                    slotPortraits[n.meta.speech_box] = CHAR_NAMES[n.meta.char_id] || ('Char'+n.meta.char_id);
+                }
+                if (n.opcode === '001A' && n.meta) {   // slot link: portrait moves src -> dest
+                    slotPortraits[n.meta.dest_slot] = CHAR_NAMES[n.meta.char_id] || slotPortraits[n.meta.src_slot] || ('Char'+n.meta.char_id);
+                    delete slotPortraits[n.meta.src_slot];
+                }
+                if ((n.opcode === '001B' || n.opcode === '0023') && n.meta?.slot_id != null) {
+                    delete slotPortraits[n.meta.slot_id];
+                    delete slotSpeakers[n.meta.slot_id];
                 }
                 if (n.opcode === '002B') {
                     curSlot = n.meta?.slot_id != null ? n.meta.slot_id : (n.args?.[0] ?? curSlot);
@@ -745,7 +805,7 @@
                 }
                 if (n.opcode === '0011') {
                     if (pendingName) { slotSpeakers[curSlot] = pendingName; pendingName = ''; }
-                    const speaker = slotSpeakers[curSlot] || SLOT_NAMES[curSlot] || ('Slot'+curSlot);
+                    const speaker = slotSpeakers[curSlot] || slotPortraits[curSlot] || SLOT_NAMES[curSlot] || ('Slot'+curSlot);
                     lines.push({ idx: i, text: n[langKey] || n.jp_text || '', speaker, slot: curSlot });
                 }
             });
@@ -755,6 +815,7 @@
                 <div class="bulk-modal-header">
                     <h3>Bulk Text Editor (${showEnglish ? 'EN' : 'JP'}) — ${lines.length} lines</h3>
                     <div class="bulk-btns">
+                        <button onclick="bulkAutoFix()" style="background:#8a5a00;color:#fff;" title="Word-wrap lines over 40 chars into new dialogue nodes; adds page breaks so no box exceeds 5 lines">Auto-fix overflow</button>
                         <button onclick="bulkExportFile()" style="background:#0e639c;color:#fff;">Export .txt</button>
                         <button onclick="bulkImportFile()" style="background:#0e639c;color:#fff;">Import .txt</button>
                         <button onclick="bulkApply()" style="background:#228b22;color:#fff;">Apply</button>
@@ -839,6 +900,82 @@
             closeBulkEditor();
             renderTree();
             renderInspector(currentNodeIndex - 1);
+        }
+        // Auto-fix overflow: word-wrap >40-char lines into extra 0x11 nodes in the same
+        // textbox; when a box would exceed 5 lines, insert the game's own page-break
+        // sequence (0x32 WAIT_FOR_CLICK, 0x33 END_PARAGRAPH, 0x2B re-select slot, 0x2C commit).
+        // New 0x11 nodes get real string-table indices reserved up front (table count from
+        // the server + any indices already reserved), so they display correctly and the
+        // compiler appends them at exactly those positions.
+        async function bulkAutoFix() {
+            const LIMIT = 40, MAX_LINES = 5;
+            const langKey = showEnglish ? 'en_text' : 'jp_text';
+            const ta = document.getElementById('bulkTextArea');
+            if (!ta) return;
+            // fold current textarea edits into the nodes first
+            const textNodes = scriptNodes.filter(n => n.opcode === '0011');
+            const cur = ta.value.split('\n');
+            if (cur.length !== textNodes.length) {
+                alert(`Line count mismatch: expected ${textNodes.length}, got ${cur.length}. Fix that before auto-fix.`);
+                return;
+            }
+            textNodes.forEach((n, i) => { n[langKey] = cur[i]; });
+            let tableCount = 0;
+            try { tableCount = (await (await fetch('/api/string_count')).json()).count || 0; } catch (e) {}
+            let nextStrIdx = scriptNodes.reduce((m, n) => {
+                const si = n.meta?.string_index;
+                return (typeof si === 'number' && si >= m) ? si + 1 : m;
+            }, tableCount);
+
+            function wrap(text) {
+                if ((text || '').length <= LIMIT) return [text || ''];
+                const words = text.split(' ');
+                const out = []; let line = '';
+                for (let w of words) {
+                    while (w.length > LIMIT) {   // single word longer than the limit: hard split
+                        if (line) { out.push(line); line = ''; }
+                        out.push(w.slice(0, LIMIT)); w = w.slice(LIMIT);
+                    }
+                    if (!line) line = w;
+                    else if (line.length + 1 + w.length <= LIMIT) line += ' ' + w;
+                    else { out.push(line); line = w; }
+                }
+                if (line) out.push(line);
+                return out;
+            }
+
+            let nextId = scriptNodes.reduce((m, n) => Math.max(m, n.id || 0), 0) + 1;
+            const RESETS = new Set(['0032', '0033', '0014', '001C', '0012']);
+            const out = [];
+            let curSlot = 0, linesInBox = 0, wrapped = 0, extraLines = 0, pageBreaks = 0;
+            for (const n of scriptNodes) {
+                if (n.opcode === '002B') {
+                    curSlot = n.meta?.slot_id != null ? n.meta.slot_id : (n.args?.[0] ?? curSlot);
+                    linesInBox = 0; out.push(n); continue;
+                }
+                if (RESETS.has(n.opcode)) { linesInBox = 0; out.push(n); continue; }
+                if (n.opcode !== '0011') { out.push(n); continue; }
+                const chunks = wrap(n[langKey] || n.jp_text || '');
+                if (chunks.length > 1) { wrapped++; extraLines += chunks.length - 1; }
+                chunks.forEach((chunk, ci) => {
+                    if (linesInBox >= MAX_LINES) {
+                        out.push({ id: nextId++, opcode: '0032', name: 'Wait for Click Input', args: [], meta: {} });
+                        out.push({ id: nextId++, opcode: '0033', name: 'Stop Mouth Animations / Stop Lip-Sync', args: [], meta: {} });
+                        out.push({ id: nextId++, opcode: '002B', name: 'Set Active Text Box Slot', args: [curSlot], meta: { slot_id: curSlot } });
+                        out.push({ id: nextId++, opcode: '002C', name: 'Refresh Screen Render / Flush Buffer', args: [], meta: {} });
+                        linesInBox = 0; pageBreaks++;
+                    }
+                    if (ci === 0) { n[langKey] = chunk; out.push(n); }
+                    else { const si = nextStrIdx++; out.push({ id: nextId++, opcode: '0011', name: 'Display Dialogue Text', args: [si], meta: { string_index: si }, jp_text: chunk, en_text: chunk }); }
+                    linesInBox++;
+                });
+            }
+            if (!wrapped) { alert('No lines over ' + LIMIT + ' characters — nothing to fix.'); return; }
+            scriptNodes.splice(0, scriptNodes.length, ...out);
+            closeBulkEditor();
+            renderTree();
+            openBulkTextEditor();
+            alert(`Auto-fix done: wrapped ${wrapped} long line(s) into ${extraLines} extra line(s), inserted ${pageBreaks} page break(s). Review, then Apply + Compile .ybc to save.`);
         }
         function bulkExportFile() {
             const ta = document.getElementById('bulkTextArea');
@@ -987,11 +1124,19 @@
                     textLineIndex = 0;
                     const tb = activeTextBoxes[currentActiveSlotId];
                     if (tb) tb.dialogue.text = '';
+                    if (pendingNameplate) { slotNameplates[currentActiveSlotId] = pendingNameplate; pendingNameplate = null; }
                 }
             }
 
             if (node.opcode === "0028") {
-                if (node.args && node.args.length > 0) currentActiveSpeakerId = String(node.args[0]);
+                if (node.args && node.args.length > 0) {
+                    currentActiveSpeakerId = String(node.args[0]);
+                    const cid = node.args[0];
+                    pendingNameplate = {
+                        en: SCH.CHARACTERS[cid] || node.meta?.char_name_en || ('Char ' + cid),
+                        jp: node.meta?.char_name_jp || SCH.CHARACTERS[cid] || ('Char ' + cid)
+                    };
+                }
             }
 
             if (node.opcode === "0041" && !scrubbing) {
@@ -1014,12 +1159,18 @@
             if (node.opcode === "0011") {
                 let targetSlotId = currentActiveSlotId;
                 if (!activeTextBoxes[targetSlotId]) targetSlotId = "0";
+                // 0x28 directly before text with no 0x2B in between still names this slot
+                if (pendingNameplate) { slotNameplates[targetSlotId] = pendingNameplate; pendingNameplate = null; }
                 const targetBox = activeTextBoxes[targetSlotId];
                 const registryInfo = slotCharacterRegistry[targetSlotId];
+                const nameplate = slotNameplates[targetSlotId];
                 if (targetBox) {
                     targetBox.container.visible = true;
                     if (targetBox.nameTag) {
-                        targetBox.nameTag.text = (registryInfo && targetSlotId !== "0" && SLOT_LAYOUTS[targetSlotId].hasName) ? (showEnglish ? registryInfo.name_en : registryInfo.name_jp) : "";
+                        const canName = targetSlotId !== "0" && SLOT_LAYOUTS[targetSlotId].hasName;
+                        targetBox.nameTag.text = !canName ? "" :
+                            nameplate ? (showEnglish ? nameplate.en : nameplate.jp) :
+                            registryInfo ? (showEnglish ? registryInfo.name_en : registryInfo.name_jp) : "";
                     }
                     let printedText = showEnglish ? (node.en_text || "") : node.jp_text;
                     if (textLineIndex === 0) targetBox.dialogue.text = printedText;
