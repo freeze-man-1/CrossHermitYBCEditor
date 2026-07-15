@@ -919,7 +919,20 @@
                 alert(`Line count mismatch: expected ${textNodes.length}, got ${cur.length}. Fix that before auto-fix.`);
                 return;
             }
-            textNodes.forEach((n, i) => { n[langKey] = cur[i]; });
+            // remember which nodes had identical JP/EN before folding (EN-injected files):
+            // for those we write wrapped chunks into BOTH fields so a later run in the
+            // other language view can't re-wrap and duplicate lines
+            const wasSame = new Map();
+            textNodes.forEach(n => wasSame.set(n, (n.jp_text || '') === (n.en_text || '')));
+            textNodes.forEach((n, i) => { n[langKey] = cur[i]; if (wasSame.get(n)) { n.jp_text = cur[i]; n.en_text = cur[i]; } });
+            // guard: block a second auto-fix in the *other* language view — the inactive
+            // field of already-wrapped nodes still holds full-length text and would be
+            // wrapped again, duplicating lines
+            const prevClone = scriptNodes.find(n => n.meta?.autofix_lang && n.meta.autofix_lang !== langKey);
+            if (prevClone && cur.some(l => l.length > LIMIT)) {
+                alert(`This script was already auto-fixed in ${prevClone.meta.autofix_lang === 'en_text' ? 'EN' : 'JP'} mode. Running it again in ${showEnglish ? 'EN' : 'JP'} mode would duplicate the wrapped lines. Switch language (JP/EN button) or re-open the original file first.`);
+                return;
+            }
             let tableCount = 0;
             try { tableCount = (await (await fetch('/api/string_count')).json()).count || 0; } catch (e) {}
             let nextStrIdx = scriptNodes.reduce((m, n) => {
@@ -959,14 +972,18 @@
                 if (chunks.length > 1) { wrapped++; extraLines += chunks.length - 1; }
                 chunks.forEach((chunk, ci) => {
                     if (linesInBox >= MAX_LINES) {
-                        out.push({ id: nextId++, opcode: '0032', name: 'Wait for Click Input', args: [], meta: {} });
-                        out.push({ id: nextId++, opcode: '0033', name: 'Stop Mouth Animations / Stop Lip-Sync', args: [], meta: {} });
-                        out.push({ id: nextId++, opcode: '002B', name: 'Set Active Text Box Slot', args: [curSlot], meta: { slot_id: curSlot } });
-                        out.push({ id: nextId++, opcode: '002C', name: 'Refresh Screen Render / Flush Buffer', args: [], meta: {} });
+                        out.push({ id: nextId++, opcode: '0032', name: 'Wait for Click Input', args: [], meta: { autofix_lang: langKey } });
+                        out.push({ id: nextId++, opcode: '0033', name: 'Stop Mouth Animations / Stop Lip-Sync', args: [], meta: { autofix_lang: langKey } });
+                        out.push({ id: nextId++, opcode: '002B', name: 'Set Active Text Box Slot', args: [curSlot], meta: { slot_id: curSlot, autofix_lang: langKey } });
+                        out.push({ id: nextId++, opcode: '002C', name: 'Refresh Screen Render / Flush Buffer', args: [], meta: { autofix_lang: langKey } });
                         linesInBox = 0; pageBreaks++;
                     }
-                    if (ci === 0) { n[langKey] = chunk; out.push(n); }
-                    else { const si = nextStrIdx++; out.push({ id: nextId++, opcode: '0011', name: 'Display Dialogue Text', args: [si], meta: { string_index: si }, jp_text: chunk, en_text: chunk }); }
+                    if (ci === 0) {
+                        n[langKey] = chunk;
+                        if (wasSame.get(n)) { n.jp_text = chunk; n.en_text = chunk; }
+                        out.push(n);
+                    }
+                    else { const si = nextStrIdx++; out.push({ id: nextId++, opcode: '0011', name: 'Display Dialogue Text', args: [si], meta: { string_index: si, autofix_lang: langKey }, jp_text: chunk, en_text: chunk }); }
                     linesInBox++;
                 });
             }
