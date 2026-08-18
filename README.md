@@ -40,6 +40,30 @@ python editor.py
 4. **Explore in Browser**:
 Once the server is running, open your web browser and navigate to the address provided in your terminal (usually `http://127.0.0.1:5000`).
 ![image](https://raw.githubusercontent.com/freeze-man-1/CrossHermitYBCEditor/refs/heads/main/Screenshots/Screenshot%202026-07-08%20061115.png)
+
+## Translation alignment guard
+
+The string table is **index-addressed**: box *N* always shows string *N*, together
+with its own voice clip, portrait and nameplate. A translation must therefore stay
+strictly **one source box : one target box**. Splitting one source line in two shifts
+every later line onto the wrong voice — and because a later merge can re-absorb the
+extra line, the total line count still matches, so counting alone will not catch it.
+
+To detect this, keep the untranslated script beside the one you are editing as
+`<name>-orig.ybc` (a `.bak` written by *Compile .ybc* also works). Then:
+
+* **Check alignment** (toolbar) compares every box against the reference and reports
+  drift regions, including whether a uniform ±1 shift would repair them.
+* **Compile .ybc / Compile As…** refuse to write a drifted script (HTTP 409). The
+  report is shown with an explicit *Ignore and continue* override.
+* The **Bulk Text Editor** shows the source line beside each target line, highlights
+  boxes whose shape no longer matches their source, and blocks *Apply* on drift.
+* **Export .txt** writes each line prefixed with its box number; **Import .txt** keys
+  on those numbers and rejects files with missing, duplicated or extra boxes.
+
+Box width is measured in half-width cells (a full-width Japanese glyph counts as two),
+so *Auto-fix overflow* wraps Japanese and English against the same real box width.
+
 ## Technical Overview
 
 * **`editor.py`**: The Flask backend handles parsing the proprietary `.ybc` binary format into JSON for the frontend, and recompiling JSON back into `.ybc` binary files.
