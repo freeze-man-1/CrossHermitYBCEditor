@@ -90,10 +90,14 @@
         .bulk-gutter-line.slot-left { border-left: 3px solid #4ec9b0; }
         .bulk-gutter-line.slot-right { border-left: 3px solid #ce9178; }
         .bulk-gutter-line.slot-narrator { border-left: 3px solid #666; }
+        .bulk-source { width: 300px; min-width: 300px; background: #1b1b1b; border-right: 1px solid #333; overflow: hidden; font-family: 'Consolas','Courier New',monospace; font-size: 12px; line-height: 21px; padding: 12px 8px; user-select: text; color: #7fa8c9; }
+        .bulk-source div { height: 21px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+        .bulk-source div.shape-warn { background: rgba(255,180,84,0.18); }
         .bulk-ta-wrap { flex: 1; position: relative; background: #252526; overflow: hidden; }
         .bulk-ta-highlight { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; padding: 12px 16px; font-family: 'Consolas','Courier New',monospace; font-size: 13px; line-height: 21px; white-space: pre; overflow: hidden; }
         .bulk-ta-highlight div { height: 21px; }
         .bulk-ta-highlight .line-over { background: rgba(200,40,40,0.25); }
+        .bulk-ta-highlight .line-shape { background: rgba(255,180,84,0.22); }
         .bulk-modal textarea { position: relative; width: 100%; height: 100%; background: transparent; color: #d4d4d4; border: none; padding: 12px 16px; font-family: 'Consolas','Courier New',monospace; font-size: 13px; line-height: 21px; resize: none; outline: none; box-sizing: border-box; }
         .bulk-modal .bulk-hint { padding: 6px 16px; font-size: 11px; color: #888; border-top: 1px solid #333; }
     </style>
@@ -124,6 +128,7 @@
             <button onclick="openScript()">Open</button>
             <button onclick="toggleLanguage()">JP/EN</button>
             <button style="background:#228b22;border-color:#2e9e2e;" onclick="saveScript()">Save JSON</button>
+            <button style="background:#2e7d32;border-color:#43a047;" onclick="checkAlignmentServer(false)" title="Compare every dialogue box against the untranslated reference .ybc (&lt;name&gt;-orig.ybc or .bak) and report drift">Check alignment</button>
             <button style="background:#8a5a00;border-color:#a06a00;" onclick="saveYbc()" title="Compile in place, overwriting the loaded .ybc (a .bak backup is kept)">Compile .ybc</button>
             <button style="background:#8a5a00;border-color:#a06a00;" onclick="saveYbcAs()" title="Compile and choose where to save the new .ybc">Compile As…</button>
             <button style="background:#6a1b9a;border-color:#8e24aa;" onclick="openBulkTextEditor()">Bulk Text</button>
@@ -681,12 +686,24 @@
                 sel.innerHTML = (list || []).map(f => `<option value="${f}">${f}</option>`).join('');
             }).catch(() => {});
         }
+        // Freeze the text each box had when the file was loaded. This is the
+        // reference the alignment guard compares against, so it must never be
+        // written to by an edit.
+        // force=true on file load (establish the reference); force=false afterwards,
+        // so boxes that auto-fix legitimately inserted get a reference of their own
+        // without overwriting the reference of boxes the user has since edited.
+        function snapshotSourceText(force) {
+            (scriptNodes || []).forEach(n => {
+                if (n.opcode !== '0011' && n.opcode !== '000F') return;
+                if (force || n._src == null) n._src = (n.jp_text || '');
+            });
+        }
         function openScript() {
             const sel = document.getElementById('scriptPicker'); if (!sel || !sel.value) return;
             playing = false; setPlayBtn();
             const enc = document.getElementById('encPicker')?.value || 'cp932';
             fetch('/api/load_script?file=' + encodeURIComponent(sel.value) + '&enc=' + enc).then(r => r.json()).then(async data => {
-                scriptNodes = data; currentNodeIndex = 0; resetSceneState();
+                scriptNodes = data; snapshotSourceText(true); currentNodeIndex = 0; resetSceneState();
                 await loadPartTextures(sel.value);
                 renderTree(); renderInspector(-1);
                 document.title = 'YBC Editor — ' + sel.value;
@@ -742,18 +759,49 @@
             fetch('/api/save_script', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) })
                 .then(res => res.json()).then(data => alert(data.message));
         }
+        // The server refuses to write a drifted script with 409. Surface the report
+        // rather than the raw status, and only retry with force=1 if the user
+        // explicitly overrides.
+        function driftFromServer(payload) {
+            return {
+                issues: payload.issues || [],
+                regions: (payload.regions || []).map(rg => ({
+                    from: rg.from_line, to: rg.to_line,
+                    shift: rg.suggestion ? (rg.suggestion.includes('+1') ? 1 : -1) : null,
+                    items: (payload.issues || []).filter(i => i.line >= rg.from_line && i.line <= rg.to_line),
+                })),
+            };
+        }
+        async function postNodes(url, onOk) {
+            const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) });
+            if (res.status === 409) {
+                const payload = await res.json();
+                showDriftModal('Refusing to write a drifted script',
+                    `<p style="color:#ccc;">${esc(payload.message || '')}</p>` + driftReportHtml(driftFromServer(payload)),
+                    () => postNodes(url + '&force=1', onOk));
+                return null;
+            }
+            return onOk(res);
+        }
         function saveYbc() {
             const lang = showEnglish ? 'en' : 'jp';
             const enc = document.getElementById('encPicker')?.value || 'cp932';
             if (!confirm(`Compile .ybc using ${lang.toUpperCase()} dialogue (${enc} encoding)?`)) return;
-            fetch('/api/save_ybc?lang=' + lang + '&enc=' + enc, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) })
-                .then(res => res.json()).then(data => alert(data.message)).catch(e => alert('Compile failed: ' + e));
+            postNodes('/api/save_ybc?lang=' + lang + '&enc=' + enc,
+                      async res => alert((await res.json()).message))
+                .catch(e => alert('Compile failed: ' + e));
         }
         async function saveYbcAs() {
             const lang = showEnglish ? 'en' : 'jp';
             const enc = document.getElementById('encPicker')?.value || 'cp932';
             try {
-                const res = await fetch('/api/compile_ybc?lang=' + lang + '&enc=' + enc, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) });
+                // deliverBlob is the onOk callback, so the force=1 retry launched
+                // from the drift modal downloads the file too
+                await postNodes('/api/compile_ybc?lang=' + lang + '&enc=' + enc, deliverBlob);
+            } catch (e) { alert('Compile failed: ' + e); }
+        }
+        async function deliverBlob(res) {
+            try {
                 if (!res.ok) { const err = await res.json().catch(() => ({})); alert('Compile failed: ' + (err.message || res.status)); return; }
                 const blob = await res.blob();
                 const suggested = (document.getElementById('scriptPicker')?.value || 'script.ybc');
@@ -774,7 +822,125 @@
             } catch (e) { alert('Compile failed: ' + e); }
         }
 
+        // ==================== ALIGNMENT GUARD ====================
+        // The string table is index-addressed: box N always shows string N, with
+        // its own voice clip, portrait and nameplate. A translation must stay
+        // strictly 1 source box : 1 target box. Splitting one source line into
+        // two shifts every later line onto the wrong voice — and if a later pair
+        // gets merged, the line COUNT still matches, so counting alone is blind.
+        const BOX_CELLS = 42;                 // widest box the original script uses
+        const MARKER_RE = /^[\s\u3000.\u2026\u3002\u3001\u226a\u226b\uff01\uff1f\uff0d!?\-\u2014\u2015]+$/;
+
+        function cellWidth(s) {               // full-width glyphs occupy two cells
+            let w = 0;
+            for (const ch of (s || '')) w += ch.codePointAt(0) > 0x7f ? 2 : 1;
+            return w;
+        }
+        function lineShape(s) {
+            s = s || '';
+            return {
+                empty: !s.trim(),
+                marker: !!s.trim() && MARKER_RE.test(s),
+                open: s.includes('\u226a'),
+                close: s.includes('\u226b'),
+            };
+        }
+        function shapeDiff(a, b) {
+            const A = lineShape(a), B = lineShape(b);
+            return ['empty', 'marker', 'open', 'close'].filter(k => A[k] !== B[k]);
+        }
+        // Compare edited lines against their source line by line and group the
+        // failures, testing whether a uniform +/-1 shift would repair them.
+        function findDrift(sourceLines, newLines) {
+            const bad = [];
+            const n = Math.min(sourceLines.length, newLines.length);
+            for (let i = 0; i < n; i++) {
+                const why = shapeDiff(sourceLines[i], newLines[i]);
+                if (why.length) bad.push({ line: i + 1, why, source: sourceLines[i], text: newLines[i] });
+            }
+            const regions = [];
+            let run = null;
+            for (const b of bad) {
+                if (run && b.line - run.to <= 12) { run.to = b.line; run.items.push(b); }
+                else { run = { from: b.line, to: b.line, items: [b] }; regions.push(run); }
+            }
+            for (const r of regions) {
+                r.shift = null;
+                for (const s of [1, -1]) {
+                    if (r.items.every(it => {
+                        const j = it.line - 1 + s;
+                        return j >= 0 && j < newLines.length &&
+                               shapeDiff(sourceLines[it.line - 1], newLines[j]).length === 0;
+                    })) { r.shift = s; break; }
+                }
+            }
+            return { issues: bad, regions };
+        }
+        function driftReportHtml(res) {
+            let h = '';
+            for (const r of res.regions) {
+                h += `<div style="margin:8px 0;padding:8px;background:#3a1d1d;border-left:3px solid #c82828;">
+                    <b>Lines ${r.from}–${r.to}</b> (${r.items.length} mismatched)`;
+                if (r.shift) h += `<div style="color:#ffb454;margin-top:4px;">Looks shifted by ${r.shift > 0 ? '+' : ''}${r.shift}
+                    — a source box was probably split into two (or two merged) just before line ${r.from}.</div>`;
+                h += '<table style="margin-top:6px;font-size:11px;width:100%;">';
+                for (const it of r.items.slice(0, 8)) {
+                    h += `<tr><td style="color:#888;width:36px;">${it.line}</td>
+                        <td style="color:#4fc1ff;">${esc(it.source)}</td>
+                        <td style="color:#ce9178;">${esc(it.text)}</td>
+                        <td style="color:#666;">${it.why.join(', ')}</td></tr>`;
+                }
+                if (r.items.length > 8) h += `<tr><td colspan="4" style="color:#666;">…and ${r.items.length - 8} more</td></tr>`;
+                h += '</table></div>';
+            }
+            return h;
+        }
+        function showDriftModal(title, bodyHtml, onOverride) {
+            const o = document.createElement('div');
+            o.className = 'bulk-overlay';
+            o.innerHTML = `<div class="bulk-modal" style="height:70vh;">
+                <div class="bulk-modal-header"><h3 style="color:#ff6b6b;">${title}</h3>
+                <div class="bulk-btns">
+                    ${onOverride ? '<button id="drOverride" style="background:#8a2020;color:#fff;">Ignore and continue</button>' : ''}
+                    <button id="drClose" style="background:#0e639c;color:#fff;">Close</button>
+                </div></div>
+                <div style="flex:1;overflow:auto;padding:12px 16px;">${bodyHtml}</div></div>`;
+            document.body.appendChild(o);
+            o.querySelector('#drClose').onclick = () => o.remove();
+            const ov = o.querySelector('#drOverride');
+            if (ov) ov.onclick = () => { o.remove(); onOverride(); };
+        }
+        // Server-side check against the untranslated reference .ybc (-orig / .bak)
+        async function checkAlignmentServer(silent) {
+            const lang = showEnglish ? 'en' : 'jp';
+            const enc = document.getElementById('encPicker')?.value || 'cp932';
+            let r;
+            try {
+                r = await (await fetch(`/api/check_alignment?lang=${lang}&enc=${enc}`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scriptNodes) })).json();
+            } catch (e) { if (!silent) alert('Check failed: ' + e); return null; }
+            if (silent) return r;
+            if (r.self_reference) {
+                alert('No untranslated reference found. Keep the original next to the script as '
+                    + '"<name>-orig.ybc" (or let a save create "<name>.ybc.bak") so drift can be detected.');
+                return r;
+            }
+            if (!r.issues || !r.issues.length) {
+                alert(`Alignment OK against ${r.reference} — ${r.stats.text_nodes} boxes, no drift.`
+                    + (r.wide?.length ? `\n\n${r.wide.length} line(s) exceed ${r.stats.max_reference_width} cells and may overflow the box.` : ''));
+                return r;
+            }
+            showDriftModal(`Alignment drift vs ${r.reference}`, driftReportHtml({
+                regions: (r.regions || []).map(rg => ({
+                    from: rg.from_line, to: rg.to_line, shift: rg.suggestion ? (rg.suggestion.includes('+1') ? 1 : -1) : null,
+                    items: r.issues.filter(i => i.line >= rg.from_line && i.line <= rg.to_line),
+                })),
+            }), null);
+            return r;
+        }
+
         // ==================== BULK TEXT EDITOR ====================
+        let bulkSourceLines = [];
         function openBulkTextEditor() {
             if (!scriptNodes || !scriptNodes.length) { alert('No script loaded.'); return; }
             const langKey = showEnglish ? 'en_text' : 'jp_text';
@@ -806,7 +972,8 @@
                 if (n.opcode === '0011') {
                     if (pendingName) { slotSpeakers[curSlot] = pendingName; pendingName = ''; }
                     const speaker = slotSpeakers[curSlot] || slotPortraits[curSlot] || SLOT_NAMES[curSlot] || ('Slot'+curSlot);
-                    lines.push({ idx: i, text: n[langKey] || n.jp_text || '', speaker, slot: curSlot });
+                    lines.push({ idx: i, text: n[langKey] || n.jp_text || '', speaker, slot: curSlot,
+                                 src: (n._src != null ? n._src : (n.jp_text || '')) });
                 }
             });
             const overlay = document.createElement('div');
@@ -815,7 +982,8 @@
                 <div class="bulk-modal-header">
                     <h3>Bulk Text Editor (${showEnglish ? 'EN' : 'JP'}) — ${lines.length} lines</h3>
                     <div class="bulk-btns">
-                        <button onclick="bulkAutoFix()" style="background:#8a5a00;color:#fff;" title="Word-wrap lines over 40 chars into new dialogue nodes; adds page breaks so no box exceeds 5 lines">Auto-fix overflow</button>
+                        <button onclick="bulkCheckAlignment()" style="background:#0e639c;color:#fff;" title="Compare every box against its source line and report drift">Check alignment</button>
+                        <button onclick="bulkAutoFix()" style="background:#8a5a00;color:#fff;" title="Word-wrap over-wide lines into new dialogue nodes; adds page breaks so no box exceeds 5 lines">Auto-fix overflow</button>
                         <button onclick="bulkExportFile()" style="background:#0e639c;color:#fff;">Export .txt</button>
                         <button onclick="bulkImportFile()" style="background:#0e639c;color:#fff;">Import .txt</button>
                         <button onclick="bulkApply()" style="background:#228b22;color:#fff;">Apply</button>
@@ -824,12 +992,13 @@
                 </div>
                 <div class="bulk-body">
                     <div class="bulk-gutter" id="bulkGutter"></div>
+                    <div class="bulk-source" id="bulkSource" title="Source text as loaded — read only"></div>
                     <div class="bulk-ta-wrap">
                         <div class="bulk-ta-highlight" id="bulkHighlight"></div>
                         <textarea id="bulkTextArea"></textarea>
                     </div>
                 </div>
-                <div class="bulk-hint">One line per dialogue entry. Line count must match (${lines.length}). Speaker labels on left show who speaks each line. <span style="color:#c82828">■</span> over 40 chars  <span style="color:#4ec9b0">■</span> left slot  <span style="color:#ce9178">■</span> right slot  <span style="color:#888">■</span> narrator</div>
+                <div class="bulk-hint"><b>One target line per source line — never split or merge.</b> The middle column is the source; keep every row facing its own source row. Count must stay ${lines.length}. <span style="color:#c82828">■</span> over ${BOX_CELLS} cells  <span style="color:#ffb454">■</span> shape differs from source  <span style="color:#4ec9b0">■</span> left slot  <span style="color:#ce9178">■</span> right slot  <span style="color:#888">■</span> narrator</div>
             </div>`;
             document.body.appendChild(overlay);
             const ta = overlay.querySelector('#bulkTextArea');
@@ -872,14 +1041,31 @@
                 gutter.appendChild(div);
             });
             ta.value = lines.map(l => l.text).join('\n');
+            const srcPane = overlay.querySelector('#bulkSource');
             const hl = overlay.querySelector('#bulkHighlight');
+            bulkSourceLines = lines.map(l => l.src);
             function updateHighlights() {
                 const textLines = ta.value.split('\n');
-                hl.innerHTML = textLines.map(l => `<div${l.length > 40 ? ' class="line-over"' : ''}></div>`).join('');
+                // width is measured in half-width cells, not JS characters: a
+                // full-width JP glyph fills two cells, so `.length` under-reports
+                // Japanese and over-reports nothing useful for English.
+                hl.innerHTML = textLines.map((l, i) => {
+                    const cls = cellWidth(l) > BOX_CELLS ? 'line-over'
+                        : (i < bulkSourceLines.length && shapeDiff(bulkSourceLines[i], l).length ? 'line-shape' : '');
+                    return `<div${cls ? ` class="${cls}"` : ''}></div>`;
+                }).join('');
+                srcPane.innerHTML = bulkSourceLines.map((sline, i) => {
+                    const drift = i < textLines.length && shapeDiff(sline, textLines[i]).length;
+                    return `<div${drift ? ' class="shape-warn"' : ''} title="${esc(sline)}">${esc(sline)}</div>`;
+                }).join('');
             }
             updateHighlights();
             ta.addEventListener('input', updateHighlights);
-            ta.addEventListener('scroll', () => { gutter.scrollTop = ta.scrollTop; hl.style.transform = `translateY(-${ta.scrollTop}px)`; });
+            ta.addEventListener('scroll', () => {
+                gutter.scrollTop = ta.scrollTop;
+                srcPane.scrollTop = ta.scrollTop;
+                hl.style.transform = `translateY(-${ta.scrollTop}px)`;
+            });
             ta.focus();
         }
         function closeBulkEditor() {
@@ -893,13 +1079,52 @@
             const textNodes = scriptNodes.filter(n => n.opcode === '0011');
             const newLines = ta.value.split('\n');
             if (newLines.length !== textNodes.length) {
-                alert(`Line count mismatch: expected ${textNodes.length}, got ${newLines.length}. Each dialogue node needs exactly one line.`);
+                const delta = newLines.length - textNodes.length;
+                alert(`Line count mismatch: expected ${textNodes.length}, got ${newLines.length} (${delta > 0 ? '+' : ''}${delta}).\n\n`
+                    + `Each box is addressed by index and carries its own voice clip and portrait, so one source line must stay one target line. `
+                    + `If a line is too long for the box, apply it as-is and use "Auto-fix overflow", which adds real boxes to the script instead of stealing the next one.`);
                 return;
             }
-            textNodes.forEach((n, i) => { n[langKey] = newLines[i]; });
-            closeBulkEditor();
-            renderTree();
-            renderInspector(currentNodeIndex - 1);
+            // A matching count is NOT proof of alignment: splitting one line and
+            // merging another pair later leaves the count unchanged while every
+            // line between them sits on the wrong index.
+            const res = findDrift(bulkSourceLines, newLines);
+            const commit = () => {
+                textNodes.forEach((n, i) => { n[langKey] = newLines[i]; });
+                closeBulkEditor();
+                renderTree();
+                renderInspector(currentNodeIndex - 1);
+            };
+            if (res.issues.length) {
+                showDriftModal(
+                    `${res.issues.length} line(s) do not match their source`,
+                    `<p style="color:#ccc;">These boxes lost a structural feature of the line they replace
+                     (bracket, ellipsis-only, or emptiness). That is what a shifted translation looks like.
+                     Fix them, or continue if you know the difference is intentional.</p>`
+                    + driftReportHtml(res), commit);
+                return;
+            }
+            commit();
+        }
+        async function bulkCheckAlignment() {
+            const ta = document.getElementById('bulkTextArea');
+            const newLines = ta ? ta.value.split('\n') : [];
+            const res = findDrift(bulkSourceLines, newLines);
+            const wide = newLines.map((l, i) => ({ i: i + 1, w: cellWidth(l), l }))
+                                 .filter(x => x.w > BOX_CELLS);
+            let body = '';
+            if (newLines.length !== bulkSourceLines.length)
+                body += `<div style="padding:8px;background:#3a1d1d;">Line count is ${newLines.length}, source has ${bulkSourceLines.length}.</div>`;
+            body += res.issues.length
+                ? driftReportHtml(res)
+                : '<div style="padding:8px;background:#1d3a1d;color:#9f9;">No drift detected — every box matches the shape of its source line.</div>';
+            if (wide.length) {
+                body += `<div style="margin-top:12px;color:#ffb454;"><b>${wide.length} line(s) wider than ${BOX_CELLS} cells</b>
+                    — these will overflow the box; use "Auto-fix overflow".</div><table style="font-size:11px;margin-top:6px;">`;
+                for (const x of wide.slice(0, 15)) body += `<tr><td style="color:#888;width:36px;">${x.i}</td><td style="color:#888;width:44px;">${x.w}</td><td>${esc(x.l)}</td></tr>`;
+                body += '</table>';
+            }
+            showDriftModal('Alignment check', body, null);
         }
         // Auto-fix overflow: word-wrap >40-char lines into extra 0x11 nodes in the same
         // textbox; when a box would exceed 5 lines, insert the game's own page-break
@@ -908,7 +1133,7 @@
         // the server + any indices already reserved), so they display correctly and the
         // compiler appends them at exactly those positions.
         async function bulkAutoFix() {
-            const LIMIT = 40, MAX_LINES = 5;
+            const LIMIT = BOX_CELLS, MAX_LINES = 5;
             const langKey = showEnglish ? 'en_text' : 'jp_text';
             const ta = document.getElementById('bulkTextArea');
             if (!ta) return;
@@ -929,7 +1154,7 @@
             // field of already-wrapped nodes still holds full-length text and would be
             // wrapped again, duplicating lines
             const prevClone = scriptNodes.find(n => n.meta?.autofix_lang && n.meta.autofix_lang !== langKey);
-            if (prevClone && cur.some(l => l.length > LIMIT)) {
+            if (prevClone && cur.some(l => cellWidth(l) > LIMIT)) {
                 alert(`This script was already auto-fixed in ${prevClone.meta.autofix_lang === 'en_text' ? 'EN' : 'JP'} mode. Running it again in ${showEnglish ? 'EN' : 'JP'} mode would duplicate the wrapped lines. Switch language (JP/EN button) or re-open the original file first.`);
                 return;
             }
@@ -940,17 +1165,31 @@
                 return (typeof si === 'number' && si >= m) ? si + 1 : m;
             }, tableCount);
 
+            // Wrap on display width, not character count: a full-width JP glyph
+            // occupies two cells, so measuring `.length` lets Japanese overflow and
+            // wraps English a third too early.
+            function clipCells(w, n) {
+                let out = '', used = 0;
+                for (const ch of w) {
+                    const c = ch.codePointAt(0) > 0x7f ? 2 : 1;
+                    if (used + c > n) break;
+                    out += ch; used += c;
+                }
+                return out;
+            }
             function wrap(text) {
-                if ((text || '').length <= LIMIT) return [text || ''];
+                text = text || '';
+                if (cellWidth(text) <= LIMIT) return [text];
                 const words = text.split(' ');
                 const out = []; let line = '';
                 for (let w of words) {
-                    while (w.length > LIMIT) {   // single word longer than the limit: hard split
+                    while (cellWidth(w) > LIMIT) {   // single word wider than the box: hard split
                         if (line) { out.push(line); line = ''; }
-                        out.push(w.slice(0, LIMIT)); w = w.slice(LIMIT);
+                        const head = clipCells(w, LIMIT);
+                        out.push(head); w = w.slice(head.length);
                     }
                     if (!line) line = w;
-                    else if (line.length + 1 + w.length <= LIMIT) line += ' ' + w;
+                    else if (cellWidth(line) + 1 + cellWidth(w) <= LIMIT) line += ' ' + w;
                     else { out.push(line); line = w; }
                 }
                 if (line) out.push(line);
@@ -987,17 +1226,34 @@
                     linesInBox++;
                 });
             }
-            if (!wrapped) { alert('No lines over ' + LIMIT + ' characters — nothing to fix.'); return; }
+            if (!wrapped) { alert('No lines over ' + LIMIT + ' cells wide — nothing to fix.'); return; }
+            // auto-fix legitimately adds boxes, so the source snapshot has to grow
+            // with them or every later line would look drifted
+            snapshotSourceText();
             scriptNodes.splice(0, scriptNodes.length, ...out);
             closeBulkEditor();
             renderTree();
             openBulkTextEditor();
             alert(`Auto-fix done: wrapped ${wrapped} long line(s) into ${extraLines} extra line(s), inserted ${pageBreaks} page break(s). Review, then Apply + Compile .ybc to save.`);
         }
+        // Export/import round-trips through an external translator are where lines
+        // get silently added or merged. Anchoring each line to its box number makes
+        // that impossible to do by accident: import keys on the number, not on
+        // position, and refuses anything with a missing, duplicated or extra id.
         function bulkExportFile() {
             const ta = document.getElementById('bulkTextArea');
             if (!ta) return;
-            const blob = new Blob([ta.value], { type: 'text/plain;charset=utf-8' });
+            const lines = ta.value.split('\n');
+            const header = [
+                '# YBC dialogue export — ' + (showEnglish ? 'EN' : 'JP'),
+                '# One line per box, prefixed with its box number.',
+                '# Translate the text AFTER the tab only. Do NOT add, remove, split,',
+                '# merge or reorder lines — each box has its own voice clip and portrait.',
+                '# Lines starting with # are ignored on import.',
+                '',
+            ].join('\n');
+            const body = lines.map((l, i) => `${String(i + 1).padStart(4, '0')}\t${l}`).join('\n');
+            const blob = new Blob([header + body], { type: 'text/plain;charset=utf-8' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             const name = document.getElementById('scriptPicker')?.value || 'script';
@@ -1015,7 +1271,48 @@
                 const reader = new FileReader();
                 reader.onload = () => {
                     const ta = document.getElementById('bulkTextArea');
-                    if (ta) ta.value = reader.result;
+                    if (!ta) return;
+                    const expected = bulkSourceLines.length;
+                    const raw = String(reader.result).split(/\r?\n/).filter(l => !l.startsWith('#'));
+                    const anchored = raw.filter(l => /^\s*\d+\t/.test(l));
+                    if (!anchored.length) {
+                        // legacy unanchored file: fall back to positional, but say so
+                        const lines = raw;
+                        while (lines.length && lines[lines.length - 1] === '') lines.pop();
+                        if (lines.length !== expected && !confirm(
+                            `This file has no box numbers, so lines are matched by position.\n\n`
+                            + `It has ${lines.length} lines but the script has ${expected} boxes. `
+                            + `Importing will misalign the dialogue. Continue anyway?`)) return;
+                        ta.value = lines.join('\n');
+                        ta.dispatchEvent(new Event('input'));
+                        alert('Imported without box numbers — re-export to get an anchored file next time.');
+                        return;
+                    }
+                    const byIdx = new Map(); const dupes = []; const strays = [];
+                    for (const l of anchored) {
+                        const tab = l.indexOf('\t');
+                        const num = parseInt(l.slice(0, tab), 10);
+                        const txt = l.slice(tab + 1);
+                        if (num < 1 || num > expected) { strays.push(num); continue; }
+                        if (byIdx.has(num)) dupes.push(num);
+                        byIdx.set(num, txt);
+                    }
+                    const missing = [];
+                    for (let i = 1; i <= expected; i++) if (!byIdx.has(i)) missing.push(i);
+                    if (dupes.length || strays.length || missing.length) {
+                        const fmt = a => a.slice(0, 12).join(', ') + (a.length > 12 ? `, …(${a.length})` : '');
+                        alert('Import rejected — the box numbers do not line up:\n\n'
+                            + (missing.length ? `Missing boxes: ${fmt(missing)}\n` : '')
+                            + (dupes.length   ? `Duplicated boxes: ${fmt(dupes)}\n` : '')
+                            + (strays.length  ? `Out-of-range boxes: ${fmt(strays)}\n` : '')
+                            + `\nThe script has ${expected} boxes, numbered 1–${expected}. `
+                            + 'Whoever edited the file added, dropped or split lines.');
+                        return;
+                    }
+                    const out = [];
+                    for (let i = 1; i <= expected; i++) out.push(byIdx.get(i));
+                    ta.value = out.join('\n');
+                    ta.dispatchEvent(new Event('input'));
                 };
                 reader.readAsText(file, 'utf-8');
             };
