@@ -163,6 +163,10 @@ def ybc_to_json(filepath, enc='cp932'):
                     node["jp_text"] = jp_text
                     node["en_text"] = jp_text
                     node["meta"]["string_index"] = parsed_args[0]
+                    # 0x0F's operand may be an ENGINE string id rather than an index
+                    # into this script's table (Chapter003 node 953 points at
+                    # dialogue line 1). Flag it so the UI can warn before editing.
+                    node["meta"]["engine_text"] = True
 
             elif opcode == 0x0012: node["name"] = "Hard Wait / End of Paragraph Block"
             elif opcode == 0x0013: node["name"] = "Clear Dialogue Text"
@@ -371,6 +375,158 @@ def _read_string_table(orig, o3, encoding='cp932'):
         txt.append(sb.decode(encoding, 'replace').replace('\x00', '').replace('　', ' '))
     return raw, txt
 
+# ---------------------------------------------------------------------------
+# Alignment checking
+#
+# The string table is INDEX-ADDRESSED by the code section: box N always shows
+# string N, with its own voice clip, portrait and nameplate. A translation must
+# therefore stay strictly 1 source box : 1 target box. If a translator splits one
+# source line into two, every later line silently shifts by one and the whole
+# scene desyncs from its audio and portraits — and because a later merge can
+# re-absorb the extra line, a plain line-count check will not catch it.
+#
+# These checks compare the edited text against a REFERENCE .ybc (the untranslated
+# original) box by box, using features any faithful translation must preserve.
+# ---------------------------------------------------------------------------
+
+TEXT_OPCODES = ("0011", "000F")
+
+# characters that make up a "marker" box: ellipses, quote brackets, bare
+# punctuation. These are kept 1:1 by any translation, so they pin the alignment.
+_MARKER_CHARS = set('.\u2026\u3002\u3001\u226a\u226b\uff01\uff1f\uff0d!?-\u2015\u2014 \u3000')
+
+
+def _cell_width(s):
+    """Display width in half-width cells (a full-width JP glyph counts as 2)."""
+    return sum(2 if ord(c) > 0x7f else 1 for c in (s or ""))
+
+
+def _is_marker(s):
+    t = "".join((s or "").split())
+    t = t.replace('\u3000', '')
+    return bool(t) and set(t) <= _MARKER_CHARS
+
+
+def _shape(s):
+    """The features a faithful translation must preserve for a given box."""
+    s = s or ""
+    return {
+        "empty": not s.strip(),
+        "marker": _is_marker(s),
+        "open": '\u226a' in s,     # <<
+        "close": '\u226b' in s,    # >>
+    }
+
+
+def find_reference_ybc(path):
+    """Locate the untranslated original to check a translated script against.
+
+    Order: <name>-orig.ybc, <name>.orig.ybc, <name>.ybc.bak, then the file itself
+    (which makes the check a no-op but never crashes).
+    """
+    if not path:
+        return None
+    stem, ext = os.path.splitext(path)
+    for cand in (stem + "-orig" + ext, stem + ".orig" + ext, path + ".bak"):
+        if os.path.exists(cand):
+            return cand
+    return path
+
+
+def check_alignment(nodes, reference_path, lang='en', encoding='cp932'):
+    """Compare edited dialogue against the reference .ybc box by box.
+
+    Returns {"issues": [...], "regions": [...], "stats": {...}}. An issue is a
+    box whose translation lost a structural feature of its source — the signature
+    of a line having drifted onto the wrong index.
+    """
+    result = {"issues": [], "regions": [], "stats": {}, "reference": None}
+    if not reference_path or not os.path.exists(reference_path):
+        return result
+    result["reference"] = os.path.basename(reference_path)
+
+    with open(reference_path, 'rb') as f:
+        ref_bytes = f.read()
+    o3 = struct.unpack_from('<4I', ref_bytes, 4)[2]
+    _, ref = _read_string_table(ref_bytes, o3, encoding)
+
+    text_nodes = [n for n in nodes if n.get("opcode") in TEXT_OPCODES]
+    ref_width = max((_cell_width(s) for s in ref), default=42)
+
+    def chosen(n):
+        if lang == "en":
+            return n.get("en_text") or n.get("jp_text") or ""
+        return n.get("jp_text") or ""
+
+    # 1. count check — extra boxes are only shown if the code section grew too
+    result["stats"] = {
+        "reference_strings": len(ref),
+        "text_nodes": len(text_nodes),
+        "max_reference_width": ref_width,
+    }
+
+    # 2. per-box shape check
+    texts, idxs = [], []
+    for n in text_nodes:
+        si = (n.get("meta") or {}).get("string_index")
+        if si is None:
+            si = (n.get("args") or [None])[0]
+        idxs.append(si)
+        texts.append(chosen(n))
+
+    bad = []
+    for pos, (si, txt) in enumerate(zip(idxs, texts)):
+        if si is None or not (0 <= si < len(ref)):
+            continue
+        a, b = _shape(ref[si]), _shape(txt)
+        why = [k for k in ("empty", "marker", "open", "close") if a[k] != b[k]]
+        if why:
+            bad.append(pos)
+            result["issues"].append({
+                "line": pos + 1, "string_index": si, "kind": "shape",
+                "why": why, "source": ref[si], "text": txt,
+            })
+
+    # 3. group consecutive-ish failures into drift regions and test whether a
+    #    uniform shift of +/-1 would repair them — that is the fingerprint of a
+    #    source box having been split (or two merged) during translation
+    if bad:
+        regions, run = [], [bad[0]]
+        for p in bad[1:]:
+            if p - run[-1] <= 12:
+                run.append(p)
+            else:
+                regions.append(run); run = [p]
+        regions.append(run)
+        for run in regions:
+            lo, hi = run[0], run[-1]
+            note = None
+            for shift in (1, -1):
+                ok = True
+                for pos in run:
+                    si, j = idxs[pos], pos + shift
+                    if not (0 <= j < len(texts)) or si is None or not (0 <= si < len(ref)):
+                        ok = False; break
+                    if _shape(ref[si]) != _shape(texts[j]):
+                        ok = False; break
+                if ok:
+                    note = ("lines here look shifted by %+d — a source box was probably "
+                            "split into two (or two merged into one) just before line %d"
+                            % (shift, lo + 1))
+                    break
+            result["regions"].append({
+                "from_line": lo + 1, "to_line": hi + 1,
+                "count": len(run), "suggestion": note,
+            })
+
+    # 4. width warnings (non-blocking)
+    result["wide"] = [
+        {"line": pos + 1, "width": _cell_width(t), "text": t}
+        for pos, t in enumerate(texts) if _cell_width(t) > ref_width
+    ]
+    return result
+
+
 def _build_string_table(nodes, orig, o3, lang, encoding='cp932'):
     """Rebuild the string table: keep unchanged strings byte-identical, re-encode
     edited 0x11 lines, append new ones. Mutates each 0x11 node's args[0] +
@@ -382,25 +538,60 @@ def _build_string_table(nodes, orig, o3, lang, encoding='cp932'):
         data = (t or "").encode(encoding, 'replace') + b'\x00'
         if len(data) % 2: data += b'\x00'   # strings are even-length
         return data
-    seen = set()
+    # Two nodes can legitimately reference the SAME table index (identical source
+    # lines are deduplicated by the original compiler, and 0x0F engine labels may
+    # collide with real dialogue). Writing both into one slot silently discards
+    # one node's edit, so the second distinct writer gets its own appended entry
+    # instead. owner[si] = the text the slot has been claimed for.
+    owner = {}
+    warnings = []
     for n in nodes:
-        if n.get("opcode") not in ("0011", "000F"):
+        if n.get("opcode") not in TEXT_OPCODES:
             continue
         m = n.setdefault("meta", {})
         si = m.get("string_index")
         chosen = (n.get("en_text") or n.get("jp_text") or "") if lang == "en" else (n.get("jp_text") or "")
-        if si is None or si < 0 or si >= len(new):   # new dialogue line → append
+        if si is None or si < 0 or si >= len(new):        # new line → append
             si = len(new); new.append(enc(chosen)); cur.append(chosen)
-        elif si not in seen and chosen != cur[si]:    # edited → re-encode (first writer wins)
-            new[si] = enc(chosen); cur[si] = chosen
-        seen.add(si)
+        elif si not in owner:                             # first claim on the slot
+            if chosen != cur[si]:
+                new[si] = enc(chosen); cur[si] = chosen
+        elif owner[si] != chosen:                         # collision with a different text
+            if n.get("opcode") == "000F":
+                # 0x0F's operand is very likely an ENGINE string id, not an index
+                # into this table (node 953 of Chapter003 points at dialogue line 1).
+                # Repointing it would corrupt a menu label, so leave it untouched.
+                warnings.append({
+                    "old_index": si, "new_index": si, "opcode": "000F",
+                    "text": chosen, "kept": owner[si],
+                    "note": "0x0F left untouched — its operand is probably an engine "
+                            "string id, not an index into this script's table",
+                })
+                continue
+            warnings.append({
+                "old_index": si, "new_index": len(new),
+                "opcode": n.get("opcode"), "text": chosen, "kept": owner[si],
+            })
+            si = len(new); new.append(enc(chosen)); cur.append(chosen)
+        owner[si] = chosen
         m["string_index"] = si
-        n["args"][0] = si                             # both 0x11 and 0x0F carry the index as first operand
+        n["args"][0] = si                                 # 0x11 and 0x0F both carry the index first
+    _build_string_table.warnings = warnings
     # serialize: [total][ (rel u16, len*16 u16) × total ][contiguous blob]
     total = len(new); base = 4 + total * 4
     entries = bytearray(); blob = bytearray()
-    for sb in new:
-        entries += struct.pack('<HH', base + len(blob), len(sb) * 16)
+    for i, sb in enumerate(new):
+        # both header fields are u16: a string may not exceed 4095 bytes and the
+        # whole table may not exceed 64 KiB. Silently wrapping either would
+        # scramble every later line, so fail loudly instead.
+        if len(sb) * 16 > 0xFFFF:
+            raise ValueError(f"string #{i} is {len(sb)} bytes; the length field caps at 4095")
+        off = base + len(blob)
+        if off > 0xFFFF:
+            raise ValueError(
+                f"string table exceeds 64 KiB at string #{i} (offset {off}); "
+                "shorten the translation or split the scene across scripts")
+        entries += struct.pack('<HH', off, len(sb) * 16)
         blob += sb
     return struct.pack('<I', total) + bytes(entries) + bytes(blob)
 
@@ -523,6 +714,42 @@ def load_script():
         with open(SCRIPT_JSON, 'r', encoding='utf-8') as f: return jsonify(json.load(f))
     return jsonify(ybc_to_json(path, enc) if path else [])
 
+@app.route('/api/check_alignment', methods=['POST'])
+def api_check_alignment():
+    """Compare the edited dialogue against the untranslated reference .ybc.
+
+    Catches the failure a line-count check cannot: a source box split into two,
+    which shifts every later line onto the wrong voice clip and portrait.
+    """
+    if not CURRENT_YBC:
+        return jsonify({"status": "error", "message": "No source .ybc loaded"}), 400
+    nodes = request.get_json() or []
+    lang = request.args.get('lang', 'en')
+    enc = request.args.get('enc', 'cp932')
+    ref = find_reference_ybc(CURRENT_YBC)
+    res = check_alignment(nodes, ref, lang, enc)
+    res["status"] = "ok"
+    res["self_reference"] = (ref == CURRENT_YBC)
+    return jsonify(res)
+
+
+def _alignment_gate(nodes, lang, enc):
+    """Return a 409 payload if the script has drifted, else None."""
+    if request.args.get('force') == '1':
+        return None
+    ref = find_reference_ybc(CURRENT_YBC)
+    if not ref or ref == CURRENT_YBC:
+        return None                       # nothing to compare against
+    res = check_alignment(nodes, ref, lang, enc)
+    if not res.get("issues"):
+        return None
+    res["status"] = "drift"
+    res["message"] = (f"{len(res['issues'])} line(s) no longer match the structure of "
+                      f"{res['reference']}. Compiling now would desync dialogue from "
+                      f"voice and portraits. Re-check, or resend with force=1.")
+    return res
+
+
 @app.route('/api/compile_ybc', methods=['POST'])
 def compile_ybc():
     """Compile the edited nodes and return the .ybc binary (no file written server-side;
@@ -533,6 +760,9 @@ def compile_ybc():
         nodes = request.get_json()
         lang = request.args.get('lang', 'jp')
         enc = request.args.get('enc', 'cp932')
+        gate = _alignment_gate(nodes, lang, enc)
+        if gate:
+            return jsonify(gate), 409
         data = json_to_ybc(nodes, CURRENT_YBC, lang, enc)
         return send_file(io.BytesIO(data), mimetype='application/octet-stream',
                          as_attachment=True, download_name=os.path.basename(CURRENT_YBC))
@@ -559,13 +789,21 @@ def save_ybc():
         nodes = request.get_json()
         lang = request.args.get('lang', 'jp')
         enc = request.args.get('enc', 'cp932')
+        gate = _alignment_gate(nodes, lang, enc)
+        if gate:
+            return jsonify(gate), 409
         data = json_to_ybc(nodes, CURRENT_YBC, lang, enc)
         bak = CURRENT_YBC + ".bak"
         if not os.path.exists(bak):
             with open(CURRENT_YBC, 'rb') as f, open(bak, 'wb') as g: g.write(f.read())
         with open(CURRENT_YBC, 'wb') as f:
             f.write(data)
-        return jsonify({"status": "success", "message": f"Wrote {len(data)} bytes to {os.path.basename(CURRENT_YBC)} (backup: .bak)"})
+        msg = f"Wrote {len(data)} bytes to {os.path.basename(CURRENT_YBC)} (backup: .bak)"
+        warn = getattr(_build_string_table, "warnings", None)
+        if warn:
+            msg += f" — {len(warn)} shared string index/indices were split; see server log"
+            app.logger.warning("string index collisions: %s", warn)
+        return jsonify({"status": "success", "message": msg, "warnings": warn or []})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
